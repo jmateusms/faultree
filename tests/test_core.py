@@ -1,6 +1,6 @@
 import unittest
 from numpy.testing import assert_almost_equal
-from faultry import eval_fta, eval_rta
+from faultree import eval_fta, eval_rta
 from test_data import fta1, rta1, fta2, rta2, fta3, rta3, fta4, rta4, \
     fta1_result, rta1_result, fta2_result, rta2_result, fta3_result, rta3_result, fta4_result, rta4_result
 

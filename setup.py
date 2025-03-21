@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='faultry',
+    name='faultree',
     version='0.1.0',
     description='Fault tree analysis library',
     author='João Mateus Santana',
