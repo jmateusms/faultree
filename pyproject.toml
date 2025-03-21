@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "faultry_jmateusms"
+version = "0.1.0"
+authors = [
+  { name="João Mateus Santana" },
+]
+description = "Fault tree analysis library"
+readme = "README.md"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+    "License :: OSI Approved :: MIT License",
+]
+
+[project.urls]
+Homepage = "https://github.com/jmateusms/faultree"
+Issues = "https://github.com/jmateusms/faultree/issues"
