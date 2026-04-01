@@ -1,0 +1,51 @@
+{
+  "esd_nodes": [
+    {
+      "label": "INIT_XOR_KN",
+      "ft": "TE_XOR_KN_BIG",
+      "branches": ["END_XOR_KN", ""]
+    }
+  ],
+  "ft_nodes": [
+    {
+      "label": "TE_XOR_KN_BIG",
+      "gate": "AND",
+      "branches": ["SIDE_XOR_OR", "SIDE_KN_OR"]
+    },
+    {
+      "label": "SIDE_XOR_OR",
+      "gate": "OR",
+      "branches": ["IE_XOR_ONLY"]
+    },
+    {
+      "label": "IE_XOR_ONLY",
+      "gate": "XOR",
+      "branches": ["BE_XONLY_1", "BE_XONLY_2", "BE_XONLY_3"]
+    },
+    {
+      "label": "SIDE_KN_OR",
+      "gate": "OR",
+      "branches": ["IE_3_OF_5_ONLY"]
+    },
+    {
+      "label": "IE_3_OF_5_ONLY",
+      "gate": "K_OF_N",
+      "k": 3,
+      "branches": ["BE_KONLY_1", "BE_KONLY_2", "BE_KONLY_3", "BE_KONLY_4", "BE_KONLY_5"]
+    }
+  ],
+  "be_nodes": [
+    { "label": "BE_XONLY_1", "prob": 0.01 },
+    { "label": "BE_XONLY_2", "prob": 0.02 },
+    { "label": "BE_XONLY_3", "prob": 0.03 },
+    { "label": "BE_KONLY_1", "prob": 0.012 },
+    { "label": "BE_KONLY_2", "prob": 0.017 },
+    { "label": "BE_KONLY_3", "prob": 0.022 },
+    { "label": "BE_KONLY_4", "prob": 0.027 },
+    { "label": "BE_KONLY_5", "prob": 0.032 }
+  ],
+  "analysis": {
+    "initiator": "INIT_XOR_KN",
+    "end_state": "END_XOR_KN"
+  }
+}

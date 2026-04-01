@@ -1,0 +1,62 @@
+{
+  "id": "TE_KN_BIG",
+  "gate": "AND",
+  "children": [
+    {
+      "id": "SIDE_1_OR",
+      "gate": "OR",
+      "children": [
+        {
+          "id": "S1_IE_2_OF_3",
+          "gate": "K_OF_N",
+          "k": 2,
+          "children": [
+            { "id": "S1_BE_23_1", "prob": 0.02 },
+            { "id": "S1_BE_23_2", "prob": 0.03 },
+            { "id": "S1_BE_23_3", "prob": 0.04 }
+          ]
+        },
+        {
+          "id": "S1_IE_3_OF_5",
+          "gate": "K_OF_N",
+          "k": 3,
+          "children": [
+            { "id": "S1_BE_35_1", "prob": 0.01 },
+            { "id": "S1_BE_35_2", "prob": 0.015 },
+            { "id": "S1_BE_35_3", "prob": 0.02 },
+            { "id": "S1_BE_35_4", "prob": 0.025 },
+            { "id": "S1_BE_35_5", "prob": 0.03 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "SIDE_2_OR",
+      "gate": "OR",
+      "children": [
+        {
+          "id": "S2_IE_2_OF_3",
+          "gate": "K_OF_N",
+          "k": 2,
+          "children": [
+            { "id": "S2_BE_23_1", "prob": 0.022 },
+            { "id": "S2_BE_23_2", "prob": 0.032 },
+            { "id": "S2_BE_23_3", "prob": 0.042 }
+          ]
+        },
+        {
+          "id": "S2_IE_3_OF_5",
+          "gate": "K_OF_N",
+          "k": 3,
+          "children": [
+            { "id": "S2_BE_35_1", "prob": 0.012 },
+            { "id": "S2_BE_35_2", "prob": 0.017 },
+            { "id": "S2_BE_35_3", "prob": 0.022 },
+            { "id": "S2_BE_35_4", "prob": 0.027 },
+            { "id": "S2_BE_35_5", "prob": 0.032 }
+          ]
+        }
+      ]
+    }
+  ]
+}

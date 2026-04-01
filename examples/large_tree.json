@@ -1,0 +1,18 @@
+{
+  "id": "TOP",
+  "gate": "OR",
+  "children": [
+    {
+      "id": "E1",
+      "event_type": "basic"
+    },
+    {
+      "id": "E2",
+      "event_type": "basic"
+    },
+    {
+      "id": "E3",
+      "event_type": "basic"
+    }
+  ]
+}

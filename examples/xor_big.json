@@ -1,0 +1,54 @@
+{
+  "id": "TE_XOR_BIG",
+  "gate": "AND",
+  "children": [
+    {
+      "id": "SIDE_1_OR",
+      "gate": "OR",
+      "children": [
+        {
+          "id": "S1_IE_XOR_A",
+          "gate": "XOR",
+          "children": [
+            { "id": "S1_BE_XA1", "prob": 0.01 },
+            { "id": "S1_BE_XA2", "prob": 0.02 },
+            { "id": "S1_BE_XA3", "prob": 0.03 }
+          ]
+        },
+        {
+          "id": "S1_IE_XOR_B",
+          "gate": "XOR",
+          "children": [
+            { "id": "S1_BE_XB1", "prob": 0.04 },
+            { "id": "S1_BE_XB2", "prob": 0.05 },
+            { "id": "S1_BE_XB3", "prob": 0.06 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "SIDE_2_OR",
+      "gate": "OR",
+      "children": [
+        {
+          "id": "S2_IE_XOR_A",
+          "gate": "XOR",
+          "children": [
+            { "id": "S2_BE_XA1", "prob": 0.015 },
+            { "id": "S2_BE_XA2", "prob": 0.025 },
+            { "id": "S2_BE_XA3", "prob": 0.035 }
+          ]
+        },
+        {
+          "id": "S2_IE_XOR_B",
+          "gate": "XOR",
+          "children": [
+            { "id": "S2_BE_XB1", "prob": 0.045 },
+            { "id": "S2_BE_XB2", "prob": 0.055 },
+            { "id": "S2_BE_XB3", "prob": 0.065 }
+          ]
+        }
+      ]
+    }
+  ]
+}

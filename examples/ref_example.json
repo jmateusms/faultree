@@ -1,0 +1,35 @@
+{
+  "id": "TE",
+  "name": "top event",
+  "event_type": "top",
+  "gate": "AND",
+  "children": [
+    {
+      "id": "IE",
+      "name": "branch A",
+      "event_type": "intermediate",
+      "gate": "OR",
+      "children": [
+        {
+          "id": "BE1",
+          "name": "sensor failure",
+          "event_type": "basic",
+          "gate": null,
+          "prob": 0.1,
+          "children": []
+        },
+        {
+          "id": "BE2",
+          "name": "controller fault",
+          "event_type": "basic",
+          "gate": null,
+          "prob": 0.05,
+          "children": []
+        }
+      ]
+    },
+    {
+      "ref": "BE1"
+    }
+  ]
+}

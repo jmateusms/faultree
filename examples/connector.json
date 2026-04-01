@@ -1,0 +1,55 @@
+{
+    "id": "TE",
+    "gate": "OR",
+    "children": [
+        {
+            "id": "INT1",
+            "gate": "OR",
+            "children": [
+                {
+                    "id": "BE3",
+                    "prob": 0.000139
+                },
+                {
+                    "id": "BE4",
+                    "prob": 0.000092
+                }
+            ]
+        },
+        {
+            "id": "INT2",
+            "gate": "OR",
+            "children": [
+                {
+                    "id": "BE5",
+                    "prob": 0.000925
+                },
+                {
+                    "id": "BE6",
+                    "prob": 0.000092
+                }
+            ]
+        },
+        {
+            "id": "BE1",
+            "prob": 0.000601
+        },
+        {
+            "id": "BE2",
+            "prob": 0.000925
+        },
+        {
+            "id": "INT3",
+            "gate": "OR",
+            "children": [
+                {
+                    "ref": "BE3"
+                },
+                {
+                    "id": "BE8",
+                    "prob": 0.000509
+                }
+            ]
+        }
+    ]
+}

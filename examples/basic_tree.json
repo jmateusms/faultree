@@ -1,0 +1,51 @@
+{
+    "id": "TE",
+    "name": "top event",
+    "event_type": "top event",
+    "gate": "OR",
+    "children": [
+        {
+            "id": "IE1",
+            "name": "branch A",
+            "event_type": "intermediate",
+            "gate": "AND",
+            "children": [
+                {
+                    "id": "BE1",
+                    "name": "Event A",
+                    "event_type": "basic",
+                    "gate": null,
+                    "prob": 0.12,
+                    "children": []
+                },
+                {
+                    "id": "BE2",
+                    "name": "Event B",
+                    "event_type": "basic",
+                    "gate": null,
+                    "prob": 0.07,
+                    "children": []
+                }
+            ]
+        },
+        {
+            "id": "IE2",
+            "name": "branch C",
+            "event_type": "intermediate",
+            "gate": "AND",
+            "children": [
+                {
+                    "ref": "BE1"
+                },
+                {
+                    "id": "BE3",
+                    "name": "controller fault",
+                    "event_type": "basic",
+                    "gate": null,
+                    "prob": 0.09,
+                    "children": []
+                }
+            ]
+        }
+    ]
+}

@@ -1,0 +1,24 @@
+{
+  "id": "TE_XOR_SIMPLE",
+  "gate": "OR",
+  "children": [
+    {
+      "id": "IE_XOR_A",
+      "gate": "XOR",
+      "children": [
+        { "id": "BE_XA1", "prob": 0.01 },
+        { "id": "BE_XA2", "prob": 0.02 },
+        { "id": "BE_XA3", "prob": 0.03 }
+      ]
+    },
+    {
+      "id": "IE_XOR_B",
+      "gate": "XOR",
+      "children": [
+        { "id": "BE_XB1", "prob": 0.04 },
+        { "id": "BE_XB2", "prob": 0.05 },
+        { "id": "BE_XB3", "prob": 0.06 }
+      ]
+    }
+  ]
+}

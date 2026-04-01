@@ -1,0 +1,39 @@
+{
+  "id": "TE_XOR_KN_BIG",
+  "gate": "AND",
+  "children": [
+    {
+      "id": "SIDE_XOR_OR",
+      "gate": "OR",
+      "children": [
+        {
+          "id": "IE_XOR_ONLY",
+          "gate": "XOR",
+          "children": [
+            { "id": "BE_XONLY_1", "prob": 0.01 },
+            { "id": "BE_XONLY_2", "prob": 0.02 },
+            { "id": "BE_XONLY_3", "prob": 0.03 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "SIDE_KN_OR",
+      "gate": "OR",
+      "children": [
+        {
+          "id": "IE_3_OF_5_ONLY",
+          "gate": "K_OF_N",
+          "k": 3,
+          "children": [
+            { "id": "BE_KONLY_1", "prob": 0.012 },
+            { "id": "BE_KONLY_2", "prob": 0.017 },
+            { "id": "BE_KONLY_3", "prob": 0.022 },
+            { "id": "BE_KONLY_4", "prob": 0.027 },
+            { "id": "BE_KONLY_5", "prob": 0.032 }
+          ]
+        }
+      ]
+    }
+  ]
+}

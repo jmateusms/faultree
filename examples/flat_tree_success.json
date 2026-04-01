@@ -1,0 +1,50 @@
+{ 
+   "esd_nodes": [ 
+     { 
+       "label": "LoIRC2tE", 
+       "ft": "LoIRC2tE_FT", 
+       "branches": ["LoIRC2tE_es", ""] 
+     } 
+   ], 
+ 
+ 
+   "ft_nodes": [ 
+     { 
+       "label": "LoIRC2tE_FT", 
+       "gate": "OR", 
+       "branches": ["LPEI", "CEIF", "G_CCLIR", "G_PE", "G_HCR"] 
+     }, 
+     { 
+       "label": "G_CCLIR", 
+       "gate": "OR", 
+       "branches": ["UCD", "WJCD"] 
+     }, 
+     { 
+       "label": "G_PE", 
+       "gate": "OR", 
+       "branches": ["LEC", "FPEC"] 
+     }, 
+     { 
+       "label": "G_HCR", 
+       "gate": "OR", 
+       "branches": ["UCD", "WDI"] 
+     } 
+   ], 
+ 
+ 
+   "be_nodes": [ 
+     { "label": "LPEI", "prob": 0.999399 }, 
+     { "label": "CEIF", "prob": 0.999075 }, 
+     { "label": "UCD",  "prob": 0.999861 }, 
+     { "label": "WJCD", "prob": 0.999908 }, 
+     { "label": "LEC",  "prob": 0.999075 }, 
+     { "label": "FPEC", "prob": 0.999908 }, 
+     { "label": "WDI",  "prob": 0.999491 } 
+   ], 
+ 
+ 
+   "analysis": { 
+     "initiator": "LoIRC2tE", 
+     "end_state": "LoIRC2tE_es" 
+   } 
+ } 
