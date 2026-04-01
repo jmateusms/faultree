@@ -1,3 +1,7 @@
-from .core import eval_fta, eval_rta
+from .builder import build, compute_event_probabilities, normalize_tree
 
-__all__ = ['eval_fta', 'eval_rta']
+__all__ = [
+    "build",
+    "compute_event_probabilities",
+    "normalize_tree",
+]

@@ -1,0 +1,28 @@
+{
+  "id": "TE_KN_SIMPLE",
+  "gate": "OR",
+  "children": [
+    {
+      "id": "IE_2_OF_3",
+      "gate": "K_OF_N",
+      "k": 2,
+      "children": [
+        { "id": "BE_23_1", "prob": 0.02 },
+        { "id": "BE_23_2", "prob": 0.03 },
+        { "id": "BE_23_3", "prob": 0.04 }
+      ]
+    },
+    {
+      "id": "IE_3_OF_5",
+      "gate": "K_OF_N",
+      "k": 3,
+      "children": [
+        { "id": "BE_35_1", "prob": 0.01 },
+        { "id": "BE_35_2", "prob": 0.015 },
+        { "id": "BE_35_3", "prob": 0.02 },
+        { "id": "BE_35_4", "prob": 0.025 },
+        { "id": "BE_35_5", "prob": 0.03 }
+      ]
+    }
+  ]
+}
