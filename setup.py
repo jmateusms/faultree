@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="faultree",
-    version="0.2.0",
+    version="0.2.1",
     description="Fault Tree Analysis using BDDs",
     packages=find_packages(),
     install_requires=[
