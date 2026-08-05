@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "faultree"
-version = "0.2.1"
+version = "0.3.0"
 description = "Fault Tree Analysis using BDDs"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 license = {file = "LICENSE"}
 authors = [
-  {name = "João Mateus Santana", email = "joao.mateus@example.com"}
+  {name = "João Mateus Santana", email = "jmateussan@gmail.com"}
 ]
 keywords = ["fault-tree", "bdd", "reliability", "safety"]
 classifiers = [
@@ -28,10 +28,18 @@ dependencies = [
 
 [project.optional-dependencies]
 server = ["fastapi", "uvicorn"]
-all = ["fastapi", "uvicorn"]
+test = ["pytest", "httpx"]
+all = ["fastapi", "uvicorn", "pytest", "httpx"]
 
 [project.scripts]
 faultree = "faultree.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/jmateusms/faultree"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    # dd's BDD.__del__ inspects the stack during GC, which is noisy on 3.14
+    "ignore::pytest.PytestUnraisableExceptionWarning",
+]

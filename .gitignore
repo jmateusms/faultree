@@ -180,3 +180,6 @@ misc/
 
 # Stray local virtualenv
 deactivate/
+
+# uv lockfile (project is not uv-managed)
+uv.lock
