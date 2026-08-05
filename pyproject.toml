@@ -37,6 +37,11 @@ faultree = "faultree.cli:main"
 [project.urls]
 Homepage = "https://github.com/jmateusms/faultree"
 
+# Explicit, so a stray top-level directory (e.g. the git-ignored misc/ scratch
+# dir) doesn't break flat-layout auto-discovery.
+[tool.setuptools.packages.find]
+include = ["faultree*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = [
