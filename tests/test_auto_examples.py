@@ -41,36 +41,35 @@ class TestExamples(unittest.TestCase):
             self._collect_basic_vars(ch, out)
 
     def _eval_node(self, node, registry, assign, success_mode=False):
+        if success_mode:
+            # Definitional dual, sharing no gate-dualization logic with the
+            # engine: success indicators y relate to failure indicators by
+            # x = not y, and the system succeeds iff the failure tree does
+            # not fire.
+            fail_assign = {k: (not v) for k, v in assign.items()}
+            return not self._eval_node_fail(node, registry, fail_assign)
+        return self._eval_node_fail(node, registry, assign)
+
+    def _eval_node_fail(self, node, registry, assign):
         if "ref" in node:
             target = registry[str(node["ref"])]
-            return self._eval_node(target, registry, assign, success_mode=success_mode)
+            return self._eval_node_fail(target, registry, assign)
 
         children = node.get("children", [])
         gate = node.get("gate")
         if not children and gate in (None, "BASIC"):
             return bool(assign[str(node["id"])])
 
-        target_gate = gate
-        if success_mode:
-            if gate == "AND":
-                target_gate = "OR"
-            elif gate == "OR":
-                target_gate = "AND"
-
-        if target_gate == "AND":
-            return all(self._eval_node(ch, registry, assign, success_mode=success_mode) for ch in children)
-        if target_gate == "OR":
-            return any(self._eval_node(ch, registry, assign, success_mode=success_mode) for ch in children)
+        if gate == "AND":
+            return all(self._eval_node_fail(ch, registry, assign) for ch in children)
+        if gate == "OR":
+            return any(self._eval_node_fail(ch, registry, assign) for ch in children)
         if gate == "XOR":
-            trues = sum(self._eval_node(ch, registry, assign, success_mode=success_mode) for ch in children)
-            res = trues == 1
-            return (not res) if success_mode else res
+            trues = sum(self._eval_node_fail(ch, registry, assign) for ch in children)
+            return trues == 1
         if gate == "K_OF_N":
             k = node.get("k")
-            n = len(children)
-            if success_mode:
-                k = n - k + 1
-            trues = sum(self._eval_node(ch, registry, assign, success_mode=success_mode) for ch in children)
+            trues = sum(self._eval_node_fail(ch, registry, assign) for ch in children)
             return trues >= k
 
         raise ValueError(f"Unsupported gate: {gate}")
@@ -139,11 +138,17 @@ class TestExamples(unittest.TestCase):
             ("fta4b.json", False),
             ("large_tree.json", False),
             ("xor_simple.json", False),
+            ("xor_simple.json", True),
             ("xor_big.json", False),
+            ("xor_big.json", True),
             ("kn_simple.json", False),
+            ("kn_simple.json", True),
             ("kn_big.json", False),
+            ("kn_big.json", True),
             ("xor_kn_big.json", False),
+            ("xor_kn_big.json", True),
             ("xor_kn_big_linear.json", False),
+            ("xor_kn_big_linear.json", True),
         ]
 
         for filename, success_mode in examples:
