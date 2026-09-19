@@ -1,4 +1,8 @@
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from copy import deepcopy
+from dataclasses import dataclass
+from importlib.metadata import PackageNotFoundError, version
+from time import perf_counter
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 import os
@@ -7,6 +11,29 @@ try:
     from dd.autoref import BDD, Function
 except Exception as e:
     raise RuntimeError("dd package is required. Install with `pip install dd`.") from e
+
+
+@dataclass(frozen=True)
+class CompiledTree:
+    """A reusable representation of one normalized fault tree.
+
+    Field bindings are frozen, but the BDD manager and mappings are mutable;
+    callers must not modify them. The source tree is copied on compilation.
+
+    The BDD functions for the top event and every named event are built once.
+    Reuse this object when quantifying the same structure with several
+    probability maps; it avoids rebuilding the manager and traversing the
+    tree for each scenario.
+    """
+
+    tree: Dict[str, Any]
+    bdd: BDD
+    top: Function
+    expression: str
+    symbolic: str
+    event_functions: Dict[str, Function]
+    ordering: Tuple[str, ...]
+    success_mode: bool
 
 
 def _is_leaf(node: Dict[str, Any]) -> bool:
@@ -276,16 +303,55 @@ def node_to_symbolic(node: Dict[str, Any], registry: Optional[Dict[str, Dict[str
     return _walk(node, registry, success_mode, leaf, combine)
 
 
+def _node_signature(value: Any) -> Any:
+    """Return a comparison-safe, deterministic representation of JSON input."""
+    if isinstance(value, dict):
+        return tuple(sorted((str(k), _node_signature(v)) for k, v in value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(_node_signature(v) for v in value)
+    if isinstance(value, np.ndarray):
+        return ("ndarray", tuple(_node_signature(v) for v in value.tolist()))
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def _add_node_definition(acc: Dict[str, Dict[str, Any]], nid: str,
+                         node: Dict[str, Any]) -> None:
+    """Register an event definition, permitting only exact repeated copies.
+
+    Repeating an identical definition is useful for formats that inline a
+    shared event.  A repeated id with different content is ambiguous and must
+    never silently replace the definition used by refs or result reporting.
+    """
+    previous = acc.get(nid)
+    if previous is None:
+        acc[nid] = node
+    elif _node_signature(previous) != _node_signature(node):
+        raise ValueError(
+            f"Conflicting duplicate id '{nid}' (event id): repeated definitions "
+            "must be identical (or use {'ref': id} for sharing)")
+
+
 def gather_nodes(node: Dict[str, Any], acc: Dict[str, Dict[str, Any]]) -> None:
-    if not isinstance(node, dict):
-        raise ValueError(f"Tree node must be a JSON object, got: {node!r}")
-    if "id" in node:
-        acc[str(node["id"])] = node
-    if "ref" in node:
-        return
-    for ch in _children_of(node):
-        if "ref" not in ch:
-            gather_nodes(ch, acc)
+    positions: Dict[str, str] = {}
+
+    def visit(current: Dict[str, Any], path: str) -> None:
+        if not isinstance(current, dict):
+            raise ValueError(f"Tree node at {path} must be a JSON object")
+        if "ref" in current:
+            return
+        if "id" in current:
+            nid = str(current["id"])
+            try:
+                _add_node_definition(acc, nid, current)
+            except ValueError as error:
+                raise ValueError(f"{error}; positions: {positions.get(nid, 'existing registry')} and {path}") from error
+            positions.setdefault(nid, path)
+        for index, child in enumerate(_children_of(current)):
+            visit(child, f"{path}.children[{index}]")
+
+    visit(node, "root")
 
 
 def var_probs_from_tree(tree: Dict[str, Any]) -> Dict[str, Any]:
@@ -316,34 +382,46 @@ def load_probs_from_file(path: str) -> Dict[str, np.ndarray]:
     return {str(col): df[col].values for col in df.columns}
 
 
-def align_probabilities(probs: Dict[str, Any], shuffle: bool = False, seed: Optional[int] = 0) -> Dict[str, Any]:
+def align_probabilities(probs: Dict[str, Any], shuffle: bool = False,
+                        seed: Optional[int] = 0,
+                        resample_independent: bool = False) -> Dict[str, Any]:
     """Align sample-array probabilities to a common length.
 
-    Shorter arrays are bootstrap-resampled with replacement. This is a stopgap
-    until a proper uncertainty engine (aligned joint sample matrix) exists:
-    per-variable resampling destroys any correlation between events, so use
-    equal-length, jointly drawn samples whenever correlations matter. The
-    default fixed seed makes runs reproducible; pass seed=None for entropy."""
+    Equal-length vectors are interpreted as aligned joint samples.  Different
+    lengths are rejected by default because independently resampling columns
+    would destroy that alignment.  Set ``resample_independent=True`` only to
+    opt into independent marginal bootstrap resampling.  ``shuffle`` applies
+    one shared permutation to all aligned vectors, preserving joint samples.
+    The default seed makes the explicit stochastic operation reproducible."""
     rng = np.random.default_rng(seed)
-
+    probs = dict(probs)
     for k, v in probs.items():
-        if isinstance(v, list):
-            probs[k] = np.array(v)
+        if isinstance(v, (list, tuple)):
+            probs[k] = np.asarray(v)
 
-    arrays = {k: v for k, v in probs.items() if isinstance(v, np.ndarray)}
+    arrays = {k: v for k, v in probs.items()
+              if isinstance(v, np.ndarray) and v.ndim == 1}
     if not arrays:
         return probs
 
-    max_len = max(len(v) for v in arrays.values())
+    lengths = {len(v) for v in arrays.values()}
+    if len(lengths) != 1 and not resample_independent:
+        details = ", ".join(f"{key}={len(value)}" for key, value in arrays.items())
+        raise ValueError(
+            "Sample probability vectors must have equal lengths to preserve "
+            "joint-sample alignment; got " + details + ". Pass "
+            "resample_independent=True (--resample-independent) to explicitly "
+            "bootstrap independent marginals.")
+    max_len = max(lengths)
 
     for k, v in arrays.items():
-        if len(v) < max_len:
+        if resample_independent:
             probs[k] = rng.choice(v, max_len, replace=True)
 
-        if shuffle:
-             arr = probs[k].copy()
-             rng.shuffle(arr)
-             probs[k] = arr
+    if shuffle:
+        permutation = rng.permutation(max_len)
+        for k, v in arrays.items():
+            probs[k] = probs[k][permutation]
 
     return probs
 
@@ -396,39 +474,88 @@ def normalize_tree(tree: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError(f"Tree must be a JSON object, got: {tree!r}")
     if "ft_nodes" in tree and "be_nodes" in tree:
         for kind in ("ft_nodes", "be_nodes"):
+            if not isinstance(tree[kind], list):
+                raise ValueError(f"Flat-format '{kind}' must be a list")
             for n in tree[kind]:
-                if not isinstance(n, dict) or "label" not in n:
+                if (not isinstance(n, dict) or not isinstance(n.get("label"), str)
+                        or not n["label"]):
                     raise ValueError(
                         f"Flat-format {kind} entries must be objects with a"
-                        f" 'label' field, got: {n!r}")
-        ft_nodes = {n["label"]: n for n in tree["ft_nodes"]}
-        be_nodes = {n["label"]: n for n in tree["be_nodes"]}
+                        f" non-empty string 'label' field, got: {n!r}")
+
+        def indexed(kind: str) -> Dict[str, Dict[str, Any]]:
+            result: Dict[str, Dict[str, Any]] = {}
+            positions = {}
+            for index, definition in enumerate(tree[kind]):
+                label = definition["label"]
+                previous = result.get(label)
+                if previous is None:
+                    result[label] = definition
+                    positions[label] = index
+                elif _node_signature(previous) != _node_signature(definition):
+                    raise ValueError(
+                        f"Conflicting duplicate id '{label}' (event id) in {kind}: "
+                        f"positions {kind}[{positions[label]}] and {kind}[{index}]; "
+                        "repeated flat definitions must be identical")
+            return result
+
+        ft_nodes = indexed("ft_nodes")
+        be_nodes = indexed("be_nodes")
+        overlap = sorted(set(ft_nodes) & set(be_nodes))
+        if overlap:
+            raise ValueError("Conflicting duplicate event ids across ft_nodes "
+                             "and be_nodes: " + ", ".join(overlap))
         all_nodes = {**ft_nodes, **be_nodes}
+
+        for label, definition in ft_nodes.items():
+            branches = definition.get("branches", [])
+            if not isinstance(branches, list) or not all(isinstance(x, str) and x for x in branches):
+                raise ValueError(
+                    f"Flat-format branches for '{label}' must be a list of "
+                    "non-empty event ids")
+
+        # Diagnose graph cycles before inferring a root: a closed cycle has
+        # no unreferenced node, but the cycle is the actionable error.
+        def check_flat_cycles(nid: str, path: List[str]) -> None:
+            if nid in path:
+                cycle = path[path.index(nid):] + [nid]
+                raise ValueError(
+                    "Cycle detected in flat-format branches: " + " -> ".join(cycle))
+            if nid not in ft_nodes:
+                return
+            for child_id in ft_nodes[nid].get("branches", []):
+                check_flat_cycles(child_id, path + [nid])
+
+        for label in ft_nodes:
+            check_flat_cycles(label, [])
 
         root_id = None
         if "analysis" in tree and "esd_nodes" in tree:
+            if not isinstance(tree["analysis"], dict) or not isinstance(tree["esd_nodes"], list):
+                raise ValueError("Flat-format analysis/esd_nodes must be an object and a list")
             initiator = tree["analysis"].get("initiator")
             for esd in tree["esd_nodes"]:
-                if esd["label"] == initiator:
+                if isinstance(esd, dict) and esd.get("label") == initiator:
                     root_id = esd.get("ft")
                     break
+            if initiator is not None and not root_id:
+                raise ValueError(
+                    f"Flat-format analysis initiator '{initiator}' has no explicit root")
 
         if not root_id:
             referenced = set()
             for n in ft_nodes.values():
                 for child in n.get("branches", []):
                     referenced.add(child)
-            candidates = [n["label"] for n in ft_nodes.values() if n["label"] not in referenced]
-            if candidates:
-                root_id = candidates[0]
-            elif ft_nodes:
-                root_id = next(iter(ft_nodes))
-
-        if not root_id:
-             if be_nodes and len(be_nodes) == 1:
-                 root_id = next(iter(be_nodes))
-             else:
-                raise ValueError("Could not determine root node in flat format")
+            candidates = sorted(set(all_nodes) - referenced)
+            if len(candidates) != 1:
+                raise ValueError(
+                    "Flat format requires an explicit analysis/esd root or "
+                    "exactly one unreferenced root; candidates: "
+                    + ", ".join(candidates or ["none"]))
+            root_id = candidates[0]
+        if root_id not in all_nodes:
+            raise ValueError(f"Flat-format root '{root_id}' not found in definitions")
 
         def build_recursive(nid: str, path: List[str]) -> Dict[str, Any]:
             if nid in path:
@@ -468,7 +595,18 @@ def normalize_tree(tree: Dict[str, Any]) -> Dict[str, Any]:
                 new_node["children"] = children
             return new_node
 
-        return build_recursive(root_id, [])
+        normalized = build_recursive(root_id, [])
+        reachable: Dict[str, Dict[str, Any]] = {}
+        gather_nodes(normalized, reachable)
+        unreachable = sorted(set(all_nodes) - set(reachable))
+        if unreachable:
+            raise ValueError("Flat-format contains disconnected/inaccessible "
+                             "nodes: " + ", ".join(unreachable))
+        return normalized
+    # Also validate recursive trees early, before BDD construction or output
+    # maps can silently overwrite an id.
+    registry: Dict[str, Dict[str, Any]] = {}
+    gather_nodes(tree, registry)
     return tree
 
 
@@ -485,13 +623,23 @@ def _validate_probs(tree: Dict[str, Any], probs: Dict[str, Any], allow_missing: 
     non_numeric = []
     non_finite = []
     out_of_range = []
+    invalid_shape = []
     for v in needed:
         if v not in probs:
             continue
+        value = probs[v]
         try:
-            arr = np.asarray(probs[v], dtype=float)
+            raw = np.asarray(value)
+            # JSON/API callers must supply actual numeric scalars/vectors;
+            # accepting strings such as "0.2" hides malformed input.
+            if raw.dtype.kind not in "iuf":
+                raise TypeError("probability is not numeric")
+            arr = raw.astype(float)
         except (ValueError, TypeError):
             non_numeric.append(v)
+            continue
+        if arr.ndim > 1 or (arr.ndim == 1 and arr.size == 0):
+            invalid_shape.append(v)
             continue
         if not np.all(np.isfinite(arr)):
             non_finite.append(v)
@@ -505,25 +653,179 @@ def _validate_probs(tree: Dict[str, Any], probs: Dict[str, Any], allow_missing: 
             "non-finite (NaN/inf) values for: " + ", ".join(non_finite)
             + " (note: pandas pads ragged CSV/Excel columns with NaN —"
             " columns must have equal length)")
+    if invalid_shape:
+        problems.append("probabilities must be finite scalars or non-empty "
+                        "1-D vectors for: " + ", ".join(invalid_shape))
     if out_of_range:
         problems.append("values outside [0, 1] for: " + ", ".join(out_of_range))
     if problems:
         raise ValueError("Invalid probabilities: " + "; ".join(problems))
 
 
-def compute_event_probabilities(bdd: BDD, tree: Dict[str, Any], probs_by_id: Union[Dict[str, Any], str, None] = None, success_mode: bool = False, shuffle: bool = False, seed: Optional[int] = 0, allow_missing: bool = False) -> Dict[str, Any]:
-    tree = normalize_tree(tree)
+def _prepared_probabilities(tree: Dict[str, Any], probs_by_id: Union[Dict[str, Any], str, None],
+                            *, shuffle: bool, seed: Optional[int],
+                            allow_missing: bool,
+                            resample_independent: bool) -> Dict[str, Any]:
+    """Resolve and validate input probabilities once for a quantification."""
     base_probs = var_probs_from_tree(tree)
-
     if probs_by_id:
         if isinstance(probs_by_id, str):
-            file_probs = load_probs_from_file(probs_by_id)
-            base_probs.update(file_probs)
+            base_probs.update(load_probs_from_file(probs_by_id))
         elif isinstance(probs_by_id, dict):
-             base_probs.update(probs_by_id)
-
-    base_probs = align_probabilities(base_probs, shuffle=shuffle, seed=seed)
+            base_probs.update(probs_by_id)
+        else:
+            raise TypeError("probabilities must be a mapping, file path, or None")
     _validate_probs(tree, base_probs, allow_missing)
+    base_probs = align_probabilities(
+        base_probs, shuffle=shuffle, seed=seed,
+        resample_independent=resample_independent)
+    _validate_probs(tree, base_probs, allow_missing)
+    return base_probs
+
+
+def _faultree_version() -> str:
+    try:
+        return version("faultree")
+    except PackageNotFoundError:
+        # Useful for source checkouts that have not been installed yet.
+        return "0.3.0"
+
+
+def compile_tree(tree: Dict[str, Any], ordering: Optional[List[str]] = None,
+                 use_names: bool = False, success_mode: bool = False,
+                 *, include_expressions: bool = True) -> CompiledTree:
+    """Compile a tree once for repeated quantification or inspection.
+
+    ``ordering`` remains entirely caller-selected. This function deliberately
+    does not apply a heuristic or mutate the declared model order.
+    """
+    normalized = deepcopy(normalize_tree(tree))
+    bdd = build_manager(normalized, ordering)
+    nodes: Dict[str, Dict[str, Any]] = {}
+    gather_nodes(normalized, nodes)
+    event_functions = {
+        nid: node_to_bdd(bdd, node, nodes, success_mode=success_mode)
+        for nid, node in nodes.items()
+    }
+    top_id = str(normalized["id"])
+    return CompiledTree(
+        tree=normalized,
+        bdd=bdd,
+        top=event_functions[top_id],
+        expression=node_to_expr(normalized, nodes, use_names=use_names,
+                                success_mode=success_mode) if include_expressions else "",
+        symbolic=node_to_symbolic(normalized, nodes, use_names=use_names,
+                                  success_mode=success_mode) if include_expressions else "",
+        event_functions=event_functions,
+        ordering=tuple(sorted(bdd.vars, key=bdd.vars.get)),
+        success_mode=success_mode,
+    )
+
+
+def quantify_compiled(compiled: CompiledTree,
+                      probs_by_id: Union[Dict[str, Any], str, None] = None,
+                      *, shuffle: bool = False, seed: Optional[int] = 0,
+                      allow_missing: bool = False,
+                      resample_independent: bool = False) -> Dict[str, Any]:
+    """Evaluate all event functions of a previously :func:`compile_tree` call."""
+    base_probs = _prepared_probabilities(
+        compiled.tree, probs_by_id, shuffle=shuffle, seed=seed,
+        allow_missing=allow_missing, resample_independent=resample_independent)
+    return {
+        nid: wmc(compiled.bdd, function, base_probs, allow_missing=allow_missing)
+        for nid, function in compiled.event_functions.items()
+    }
+
+
+def analyze(tree: Dict[str, Any], probs_by_id: Union[Dict[str, Any], str, None] = None,
+            ordering: Optional[List[str]] = None, *, use_names: bool = False,
+            success_mode: bool = False, shuffle: bool = False,
+            seed: Optional[int] = 0, allow_missing: bool = False,
+            resample_independent: bool = False) -> Dict[str, Any]:
+    """Return a reproducible, structured FTA result.
+
+    ``conditional_Q[event]["true"]`` and ``["false"]`` are top-event
+    probabilities after forcing that *basic* event respectively true or false.
+    Birnbaum importance is their signed difference. Its sign is retained: XOR
+    and other non-monotonic logic can make forcing a failure less likely to
+    produce the top event.
+    """
+    compiled = compile_tree(tree, ordering, use_names=use_names,
+                            success_mode=success_mode)
+    base_probs = _prepared_probabilities(
+        compiled.tree, probs_by_id, shuffle=shuffle, seed=seed,
+        allow_missing=allow_missing, resample_independent=resample_independent)
+    probabilities = {
+        nid: wmc(compiled.bdd, function, base_probs, allow_missing=allow_missing)
+        for nid, function in compiled.event_functions.items()
+    }
+    basic_events: List[str] = []
+    collect_basic_events(compiled.tree, basic_events)
+    conditional_q: Dict[str, Dict[str, Any]] = {}
+    birnbaum: Dict[str, Any] = {}
+    for event_id in dict.fromkeys(basic_events):
+        forced_true = compiled.bdd.let({event_id: True}, compiled.top)
+        forced_false = compiled.bdd.let({event_id: False}, compiled.top)
+        q_true = wmc(compiled.bdd, forced_true, base_probs,
+                     allow_missing=allow_missing)
+        q_false = wmc(compiled.bdd, forced_false, base_probs,
+                      allow_missing=allow_missing)
+        conditional_q[event_id] = {"true": q_true, "false": q_false}
+        birnbaum[event_id] = q_true - q_false
+    top_id = str(compiled.tree["id"])
+    return {
+        "Q": probabilities[top_id],
+        "conditional_Q": conditional_q,
+        "birnbaum": birnbaum,
+        "assumptions": {
+            "basic_event_independence": True,
+            "variable_order": list(compiled.ordering),
+            "faultree_version": _faultree_version(),
+            "seed": seed,
+            "shuffle": shuffle,
+            "resample_independent": resample_independent,
+            "sample_vectors": "jointly_aligned unless resample_independent is true",
+            "sample_count": max((np.asarray(v).size for v in base_probs.values()), default=1),
+            "success_mode": success_mode,
+        },
+        "probabilities": probabilities,
+        "expression": compiled.expression,
+        "symbolic": compiled.symbolic,
+    }
+
+
+def benchmark_orderings(tree: Dict[str, Any], orderings: Iterable[List[str]],
+                        *, success_mode: bool = False,
+                        probs_by_id: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """Measure caller-supplied BDD orders without choosing one on their behalf."""
+    results: List[Dict[str, Any]] = []
+    for ordering in orderings:
+        started = perf_counter()
+        compiled = compile_tree(tree, list(ordering), success_mode=success_mode,
+                                include_expressions=False)
+        compile_seconds = perf_counter() - started
+        measurement = {}
+        if probs_by_id is not None:
+            evaluation_started = perf_counter()
+            q = quantify_compiled(compiled, probs_by_id)[str(compiled.tree["id"])]
+            measurement = {"evaluation_seconds": perf_counter() - evaluation_started,
+                           "sample_count": int(np.asarray(q).size),
+                           "Q": np.asarray(q).tolist()}
+        results.append({
+            "ordering": list(compiled.ordering),
+            "bdd_nodes": len(compiled.bdd),
+            "top_bdd_nodes": compiled.top.dag_size,
+            "compile_seconds": compile_seconds,
+            **measurement,
+        })
+    return results
+
+
+def compute_event_probabilities(bdd: BDD, tree: Dict[str, Any], probs_by_id: Union[Dict[str, Any], str, None] = None, success_mode: bool = False, shuffle: bool = False, seed: Optional[int] = 0, allow_missing: bool = False, resample_independent: bool = False) -> Dict[str, Any]:
+    tree = normalize_tree(tree)
+    base_probs = _prepared_probabilities(
+        tree, probs_by_id, shuffle=shuffle, seed=seed,
+        allow_missing=allow_missing, resample_independent=resample_independent)
 
     nodes: Dict[str, Dict[str, Any]] = {}
     gather_nodes(tree, nodes)
@@ -543,11 +845,6 @@ def compute_event_probabilities(bdd: BDD, tree: Dict[str, Any], probs_by_id: Uni
 
 
 def build(tree: Dict[str, Any], ordering: Optional[List[str]] = None, use_names: bool = False, success_mode: bool = False) -> Tuple[BDD, Function, str, str]:
-    tree = normalize_tree(tree)
-    bdd = build_manager(tree, ordering)
-    nodes: Dict[str, Dict[str, Any]] = {}
-    gather_nodes(tree, nodes)
-    top_func = node_to_bdd(bdd, tree, nodes, success_mode=success_mode)
-    expr = node_to_expr(tree, nodes, use_names=use_names, success_mode=success_mode)
-    symb = node_to_symbolic(tree, nodes, use_names=use_names, success_mode=success_mode)
-    return bdd, top_func, expr, symb
+    compiled = compile_tree(tree, ordering, use_names=use_names,
+                            success_mode=success_mode)
+    return compiled.bdd, compiled.top, compiled.expression, compiled.symbolic

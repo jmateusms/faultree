@@ -3,7 +3,19 @@ import json
 import sys
 import os
 import numpy as np
-from .builder import build, compute_event_probabilities, normalize_tree
+from .builder import analyze, build, compute_event_probabilities, normalize_tree
+
+
+def _to_jsonable(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {key: _to_jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_jsonable(item) for item in value]
+    return value
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Build OBDD from FTA JSON and evaluate probabilities.")
@@ -12,9 +24,11 @@ def main() -> None:
     p.add_argument("--probs", type=str, default=None, help="JSON mapping of basic event id -> probability, or path to CSV/Excel file")
     p.add_argument("--use-names", action="store_true", help="Use event names instead of IDs in expression output")
     p.add_argument("--reliability", action="store_true", help="Calculate Reliability (Success Probability) from a Fault Tree (Dual Tree Mode)")
-    p.add_argument("--shuffle", action="store_true", help="Shuffle samples before processing (for array inputs)")
-    p.add_argument("--seed", type=int, default=0, help="Random seed for sample resampling/shuffling (default: 0, reproducible)")
+    p.add_argument("--shuffle", action="store_true", help="Apply one shared shuffle to aligned sample vectors")
+    p.add_argument("--seed", type=int, default=0, help="Random seed for sample shuffling or explicit resampling (default: 0)")
+    p.add_argument("--resample-independent", action="store_true", help="Explicitly bootstrap unequal sample vectors as independent marginals (destroys joint alignment)")
     p.add_argument("--assume-missing-zero", action="store_true", help="Treat basic events with no probability as 0.0 instead of raising an error")
+    p.add_argument("--structured", action="store_true", help="Print structured JSON with Q, conditional Q, signed Birnbaum importance, and assumptions")
     p.add_argument("--serve", action="store_true", help="Run the API server")
     p.add_argument("--host", default="127.0.0.1", help="API host (default: 127.0.0.1; use 0.0.0.0 to expose on all interfaces)")
     p.add_argument("--port", type=int, default=8000, help="API port (default: 8000)")
@@ -43,10 +57,11 @@ def main() -> None:
     except json.JSONDecodeError as e:
         sys.exit(f"Error: '{args.json_file}' is not valid JSON: {e}")
 
-    if args.reliability:
-        print("Mode: Reliability Analysis (Dual Tree)")
-    else:
-        print("Mode: Fault Tree Analysis")
+    if not args.structured:
+        if args.reliability:
+            print("Mode: Reliability Analysis (Dual Tree)")
+        else:
+            print("Mode: Fault Tree Analysis")
 
     prob_input = None
     if args.probs:
@@ -71,6 +86,15 @@ def main() -> None:
             else:
                 prob_input = prob_file
 
+        if args.structured:
+            result = analyze(
+                tree, prob_input, args.ordering, use_names=args.use_names,
+                success_mode=args.reliability, shuffle=args.shuffle,
+                seed=args.seed, allow_missing=args.assume_missing_zero,
+                resample_independent=args.resample_independent)
+            print(json.dumps(_to_jsonable(result), indent=2, sort_keys=True))
+            return
+
         bdd, top, expr, symb = build(tree, args.ordering, use_names=args.use_names, success_mode=args.reliability)
         print("Expression:")
         print(expr)
@@ -80,7 +104,8 @@ def main() -> None:
         prob_map = compute_event_probabilities(
             bdd, tree, prob_input,
             success_mode=args.reliability, shuffle=args.shuffle,
-            seed=args.seed, allow_missing=args.assume_missing_zero)
+            seed=args.seed, allow_missing=args.assume_missing_zero,
+            resample_independent=args.resample_independent)
     except (ValueError, KeyError, TypeError) as e:
         sys.exit(f"Error: {e}")
     except RecursionError:
