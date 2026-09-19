@@ -183,3 +183,6 @@ deactivate/
 
 # uv lockfile (project is not uv-managed)
 uv.lock
+
+# macOS metadata
+.DS_Store
