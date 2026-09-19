@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import numpy as np
 import uvicorn
-from faultree.builder import build, compute_event_probabilities, normalize_tree
+from faultree.builder import analyze, normalize_tree
 
 logger = logging.getLogger("faultree.server")
 
@@ -18,6 +18,7 @@ class ProbabilityRequest(BaseModel):
     shuffle: bool = False
     seed: Optional[int] = 0
     allow_missing: bool = False
+    resample_independent: bool = False
 
 
 def _to_native(value: Any) -> Any:
@@ -26,6 +27,10 @@ def _to_native(value: Any) -> Any:
         return value.tolist()
     if isinstance(value, np.generic):
         return value.item()
+    if isinstance(value, dict):
+        return {key: _to_native(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_native(item) for item in value]
     return value
 
 
@@ -39,24 +44,24 @@ def analyze_tree(request: ProbabilityRequest):
     try:
         tree = normalize_tree(request.tree)
 
-        bdd, top, expr, symb = build(tree, request.ordering, success_mode=request.reliability)
-
-        prob_map = compute_event_probabilities(
-            bdd,
+        result = analyze(
             tree,
             request.probs,
+            request.ordering,
             success_mode=request.reliability,
             shuffle=request.shuffle,
             seed=request.seed,
             allow_missing=request.allow_missing,
+            resample_independent=request.resample_independent,
         )
-        prob_map = {k: _to_native(v) for k, v in prob_map.items()}
+        prob_map = _to_native(result["probabilities"])
 
         return {
-            "expression": expr,
-            "symbolic": symb,
+            "expression": result["expression"],
+            "symbolic": result["symbolic"],
             "probabilities": prob_map,
-            "top_event_probability": prob_map.get(str(tree.get("id")))
+            "top_event_probability": prob_map.get(str(tree.get("id"))),
+            "result": _to_native(result),
         }
     except (ValueError, KeyError, TypeError) as e:
         # The engine raises ValueError for input problems; KeyError/TypeError

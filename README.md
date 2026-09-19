@@ -37,8 +37,9 @@ pip install -e ".[server,test]"
   - `gate`: `AND`, `OR`, `XOR`, `K_OF_N`, or `null`/`BASIC` for leaves.
   - `children` (list): Child nodes.
   - `k` (int): Required for `K_OF_N` gates (`0 <= k <= n`).
-  - `prob` (float or list of floats): Probability for basic/undeveloped
-    events. A list is treated as a sample vector and propagated elementwise.
+  - `prob` (finite float or non-empty list of finite floats): Probability for
+    basic/undeveloped events. A list is treated as a one-dimensional sample
+    vector and propagated elementwise.
   - `ref` (string): ID of another node to clone/reference.
   - `prob_file` (string, optional, top level): CSV/Excel file with one column
     per basic-event id, resolved relative to the tree JSON.
@@ -55,6 +56,12 @@ Faultree supports two JSON formats (auto-detected):
 1. **Recursive Tree** (standard): Nodes nested within `children`.
 2. **Flat List**: Nodes defined in `ft_nodes` and `be_nodes` lists, with
    `branches` referencing child IDs.
+
+Event IDs must identify one definition. Repeating an identical definition is
+accepted as an inline copy of the same event; conflicting repeated definitions
+are rejected. A flat model must provide an explicit `analysis`/`esd_nodes`
+root or have exactly one unreferenced root, and every declared node must be
+reachable from it.
 
 ## Usage
 
@@ -108,9 +115,10 @@ curl -X POST http://localhost:8000/analyze \
 - **Exact quantification**: weighted model counting via the BDD cofactor
   recursion — linear in BDD size, exact for repeated/shared events.
 - **Dual tree mode**: reliability/success probability from the same tree.
-- **Sampled probabilities**: array-valued probabilities propagate elementwise
-  (resampling of unequal-length arrays is seeded and reproducible;
-  `--seed`/`--shuffle`).
+- **Sampled probabilities**: equal-length array-valued probabilities are joint
+  samples and propagate elementwise. Unequal lengths are rejected by default;
+  `--resample-independent` explicitly bootstraps independent marginals and
+  therefore discards joint alignment. `--shuffle` uses a shared permutation.
 - **Symbolic output**: algebraic expressions (e.g. `(A + B * C)`).
 - **Ref/clones**: reuse events within the same tree using `{"ref": "ID"}`
   (cycles are detected and rejected).
@@ -148,3 +156,11 @@ XOR duality, cycle detection, input validation, server behavior).
   `--ordering` (which must cover all basic events).
 - The engine (and the underlying `dd` library) is recursive: extremely deep
   trees/BDDs (~1000 levels) can hit Python's recursion limit.
+
+### Bounded monotone minimal cuts
+
+`minimal_cut_sets(tree, max_order=6, max_candidates=10000, max_sets=1000,
+max_basic_events=32)` returns positive minimal cuts for AND/OR/K_OF_N models.
+Always inspect `complete`, `truncated` and `reason`; an incomplete list is not
+an exhaustive reliability result. XOR needs signed implicants and is rejected.
+Limits apply to enumeration, not a hard wall-clock or BDD-memory budget.

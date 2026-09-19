@@ -275,26 +275,86 @@ class TestInputValidation(unittest.TestCase):
             normalize_tree(flat)
 
 
-class TestSeededResampling(unittest.TestCase):
-    """A-5: ragged-array resampling must be reproducible under a fixed seed."""
+class TestSampleVectorContracts(unittest.TestCase):
+    """Sample vectors are aligned joint samples unless explicitly resampled."""
 
     def _ragged(self):
         return {"a": np.array([0.1, 0.2, 0.3, 0.4]), "b": np.array([0.5, 0.6])}
 
     def test_same_seed_same_result(self):
-        r1 = align_probabilities(self._ragged(), seed=0)
-        r2 = align_probabilities(self._ragged(), seed=0)
+        r1 = align_probabilities(self._ragged(), seed=0, resample_independent=True)
+        r2 = align_probabilities(self._ragged(), seed=0, resample_independent=True)
         np.testing.assert_array_equal(r1["b"], r2["b"])
 
     def test_shuffle_reproducible(self):
-        r1 = align_probabilities(self._ragged(), shuffle=True, seed=42)
-        r2 = align_probabilities(self._ragged(), shuffle=True, seed=42)
+        r1 = align_probabilities(self._ragged(), shuffle=True, seed=42,
+                                 resample_independent=True)
+        r2 = align_probabilities(self._ragged(), shuffle=True, seed=42,
+                                 resample_independent=True)
         np.testing.assert_array_equal(r1["a"], r2["a"])
         np.testing.assert_array_equal(r1["b"], r2["b"])
 
     def test_resampled_length(self):
-        r = align_probabilities(self._ragged(), seed=0)
+        r = align_probabilities(self._ragged(), seed=0, resample_independent=True)
         self.assertEqual(len(r["b"]), 4)
+
+    def test_unequal_vectors_rejected_without_explicit_opt_in(self):
+        with self.assertRaisesRegex(ValueError, "equal lengths.*resample_independent"):
+            align_probabilities(self._ragged())
+
+    def test_shared_shuffle_preserves_joint_pairs(self):
+        probs = {"a": np.array([0.1, 0.2, 0.3]),
+                 "b": np.array([0.4, 0.5, 0.6])}
+        shuffled = align_probabilities(probs, shuffle=True, seed=42)
+        np.testing.assert_allclose(shuffled["b"] - shuffled["a"], 0.3)
+
+    def test_empty_or_multidimensional_vectors_rejected(self):
+        for prob in ([], [[0.1, 0.2]]):
+            tree = {"id": "T", "gate": "OR", "children": [
+                {"id": "a", "prob": prob}]}
+            with self.subTest(prob=prob):
+                with self.assertRaisesRegex(ValueError, "finite scalars or non-empty"):
+                    _top_prob(tree)
+
+
+class TestEventIdentityAndFlatRoot(unittest.TestCase):
+
+    def test_conflicting_recursive_duplicate_id_rejected(self):
+        tree = {"id": "T", "gate": "OR", "children": [
+            {"id": "a", "prob": 0.1}, {"id": "a", "prob": 0.2}]}
+        with self.assertRaisesRegex(ValueError, "Conflicting duplicate id 'a'"):
+            build(tree)
+
+    def test_identical_recursive_duplicate_id_is_shared_event(self):
+        tree = {"id": "T", "gate": "AND", "children": [
+            {"id": "a", "prob": 0.2}, {"id": "a", "prob": 0.2}]}
+        self.assertAlmostEqual(float(_top_prob(tree)), 0.2, places=12)
+
+    def test_conflicting_flat_duplicate_id_rejected(self):
+        flat = {"ft_nodes": [
+            {"label": "T", "gate": "OR", "branches": ["a"]},
+            {"label": "T", "gate": "AND", "branches": ["a"]}],
+            "be_nodes": [{"label": "a", "prob": 0.1}]}
+        with self.assertRaisesRegex(ValueError, "Conflicting duplicate id 'T'"):
+            normalize_tree(flat)
+
+    def test_ambiguous_flat_root_rejected(self):
+        flat = {"ft_nodes": [
+            {"label": "T1", "gate": "OR", "branches": ["a"]},
+            {"label": "T2", "gate": "OR", "branches": ["b"]}],
+            "be_nodes": [{"label": "a", "prob": 0.1}, {"label": "b", "prob": 0.2}]}
+        with self.assertRaisesRegex(ValueError, "exactly one unreferenced root"):
+            normalize_tree(flat)
+
+    def test_disconnected_flat_node_rejected_with_explicit_root(self):
+        flat = {"analysis": {"initiator": "I"},
+            "esd_nodes": [{"label": "I", "ft": "T"}],
+            "ft_nodes": [
+                {"label": "T", "gate": "OR", "branches": ["a"]},
+                {"label": "unused", "gate": "OR", "branches": ["b"]}],
+            "be_nodes": [{"label": "a", "prob": 0.1}, {"label": "b", "prob": 0.2}]}
+        with self.assertRaisesRegex(ValueError, "disconnected/inaccessible.*b.*unused"):
+            normalize_tree(flat)
 
 
 class TestServer(unittest.TestCase):
@@ -366,6 +426,16 @@ class TestServer(unittest.TestCase):
             json={"tree": {"id": "T", "gate": "OR", "children": "oops"}})
         self.assertEqual(resp.status_code, 400)
 
+    def test_unequal_sample_vectors_require_explicit_opt_in(self):
+        tree = {"id": "T", "gate": "OR", "children": [
+            {"id": "a", "prob": [0.1, 0.2]}, {"id": "b", "prob": [0.3]}]}
+        rejected = self.client.post("/analyze", json={"tree": tree})
+        self.assertEqual(rejected.status_code, 400)
+        self.assertIn("equal lengths", rejected.json()["detail"])
+        accepted = self.client.post(
+            "/analyze", json={"tree": tree, "resample_independent": True})
+        self.assertEqual(accepted.status_code, 200)
+
 
 class TestCLI(unittest.TestCase):
     """End-to-end CLI coverage (subprocess, same interpreter)."""
@@ -415,6 +485,39 @@ class TestCLI(unittest.TestCase):
         finally:
             os.unlink(path)
 
+    def test_unequal_sample_vectors_require_explicit_opt_in(self):
+        import tempfile
+        tree = {"id": "T", "gate": "OR", "children": [
+            {"id": "a", "prob": [0.1, 0.2]}, {"id": "b", "prob": [0.3]}]}
+        with tempfile.NamedTemporaryFile(
+                "w", suffix=".json", delete=False) as fh:
+            json.dump(tree, fh)
+            path = fh.name
+        try:
+            rejected = self._run(path)
+            self.assertEqual(rejected.returncode, 1)
+            self.assertIn("equal lengths", rejected.stderr)
+            accepted = self._run(path, "--resample-independent")
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        finally:
+            os.unlink(path)
+
 
 if __name__ == '__main__':
     unittest.main()
+
+
+def test_duplicate_error_reports_both_positions():
+    import pytest
+    from faultree.builder import normalize_tree
+    tree = {"id": "T", "gate": "OR", "children": [
+        {"id": "A", "prob": .1}, {"id": "A", "prob": .2}]}
+    with pytest.raises(ValueError, match=r"root.children\[0\].*root.children\[1\]"):
+        normalize_tree(tree)
+
+
+def test_explicit_independent_resampling_covers_equal_length_marginals():
+    from faultree.builder import align_probabilities
+    values = np.arange(100) / 100
+    aligned = align_probabilities({"a": values, "b": values}, resample_independent=True, seed=1)
+    assert not np.array_equal(aligned["a"], aligned["b"])
