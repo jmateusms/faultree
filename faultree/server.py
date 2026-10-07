@@ -2,9 +2,8 @@ import logging
 from typing import Any, Dict, List, Optional, Union
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import numpy as np
 import uvicorn
-from faultree.builder import analyze, normalize_tree
+from faultree.builder import analyze, normalize_tree, to_jsonable
 
 logger = logging.getLogger("faultree.server")
 
@@ -19,19 +18,6 @@ class ProbabilityRequest(BaseModel):
     seed: Optional[int] = 0
     allow_missing: bool = False
     resample_independent: bool = False
-
-
-def _to_native(value: Any) -> Any:
-    """Convert numpy scalars/arrays to JSON-serializable native types."""
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, np.generic):
-        return value.item()
-    if isinstance(value, dict):
-        return {key: _to_native(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_to_native(item) for item in value]
-    return value
 
 
 @app.get("/health")
@@ -54,14 +40,14 @@ def analyze_tree(request: ProbabilityRequest):
             allow_missing=request.allow_missing,
             resample_independent=request.resample_independent,
         )
-        prob_map = _to_native(result["probabilities"])
+        prob_map = to_jsonable(result["probabilities"])
 
         return {
             "expression": result["expression"],
             "symbolic": result["symbolic"],
             "probabilities": prob_map,
             "top_event_probability": prob_map.get(str(tree.get("id"))),
-            "result": _to_native(result),
+            "result": to_jsonable(result),
         }
     except (ValueError, KeyError, TypeError) as e:
         # The engine raises ValueError for input problems; KeyError/TypeError

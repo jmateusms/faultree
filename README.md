@@ -19,9 +19,16 @@ A Python tool for Fault Tree Analysis (FTA) using Ordered Binary Decision Diagra
 Requires Python ≥ 3.10.
 
 ```bash
-pip install faultree            # library + CLI
+pip install faultree            # library + CLI (needs only dd and numpy)
 pip install "faultree[server]"  # + FastAPI/uvicorn for the API server
+pip install "faultree[excel]"   # + pandas/openpyxl to read Excel probability files
 ```
+
+CSV probability files need no extra dependency. faultree uses `dd.autoref`,
+the pure-Python BDD backend of `dd`, so no C compiler or CUDD is needed at
+run time, which also lets it run in the browser under Pyodide. PyPI has only
+Linux wheels and the source of `dd`; for Pyodide, build a pure-Python wheel
+first with `pip wheel dd --no-deps --no-binary dd`.
 
 From a checkout of this repository:
 
@@ -86,6 +93,18 @@ system success probability `R = 1 - Q`:
 faultree examples/fta3_success.json --reliability
 ```
 
+Structured JSON (top-event probability, conditional probabilities, importance
+measures and the assumptions used) and minimal cut sets:
+
+```bash
+faultree examples/fta4.json --structured
+faultree examples/fta4.json --cut-sets        # optional max order, default 6
+```
+
+JSON output is strict: non-finite values (for example an infinite risk
+reduction worth when one event alone guards the top event) are written as
+`null`.
+
 Run the API server (binds to `127.0.0.1` by default; pass `--host 0.0.0.0`
 to expose it):
 
@@ -114,6 +133,15 @@ curl -X POST http://localhost:8000/analyze \
 - **Logic Gates**: AND, OR, XOR (exactly one), K-of-N (at least k).
 - **Exact quantification**: weighted model counting via the BDD cofactor
   recursion — linear in BDD size, exact for repeated/shared events.
+- **Importance measures** (`analyze()`, `--structured`; fault-tree mode):
+  Birnbaum, criticality `(Q − Q0)/Q`, risk achievement worth (RAW) and risk
+  reduction worth (RRW), computed exactly on the BDD for every basic event,
+  also elementwise for sample vectors. Criticality equals the risk-decrease
+  form that PRA codes often call Fussell-Vesely (`1 − 1/RRW`); Fussell's
+  cut-set definition is larger and agrees with it only for rare events.
+- **Minimal cut sets** (`minimal_cut_sets()`, `--cut-sets`): bounded
+  enumeration for monotone AND/OR/K-of-N trees, with an explicit
+  completeness flag.
 - **Dual tree mode**: reliability/success probability from the same tree.
 - **Sampled probabilities**: equal-length array-valued probabilities are joint
   samples and propagate elementwise. Unequal lengths are rejected by default;
@@ -138,8 +166,8 @@ golden values; `tests/test_fixes.py` covers regression cases (success-mode
 XOR duality, cycle detection, input validation, server behavior).
 
 ## Backlog
-- **Minimal Cut Sets**: Extract and report minimal cut sets (ZBDD).
-- **Importance Measures**: Birnbaum, criticality, Fussell-Vesely, RAW, RRW.
+- **Minimal Cut Sets at scale**: ZBDD-based extraction beyond the bounded
+  enumeration.
 - **Variable Ordering**: Heuristics and `dd` sifting for BDD size reduction.
 - **Time-Dependent Analysis**: Exponential/Weibull distributions,
   availability.

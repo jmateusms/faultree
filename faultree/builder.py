@@ -3,8 +3,9 @@ from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from time import perf_counter
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
+import csv
+import math
 import numpy as np
-import pandas as pd
 import os
 
 try:
@@ -368,18 +369,63 @@ def var_probs_from_tree(tree: Dict[str, Any]) -> Dict[str, Any]:
     return probs
 
 
+def _read_csv_columns(path: str) -> Dict[str, np.ndarray]:
+    """Read a header-plus-rows CSV into float columns without pandas.
+
+    Empty cells (e.g. a ragged column) become NaN so validation reports them,
+    exactly as the previous pandas-based reader did. Columns without a header
+    are ignored when they are empty too (trailing separators, as some
+    spreadsheet exports write); an unnamed column holding values is an error."""
+    with open(path, newline="", encoding="utf-8-sig") as fh:
+        rows = [row for row in csv.reader(fh) if any(cell.strip() for cell in row)]
+    if not rows:
+        raise ValueError(f"Probability file is empty: {path}")
+    header = [cell.strip() for cell in rows[0]]
+    named = [name for name in header if name]
+    duplicated = sorted({name for name in named if named.count(name) > 1})
+    if duplicated:
+        raise ValueError(f"{path}: column names must be unique"
+                         f" (repeated: {', '.join(duplicated)})")
+    columns: Dict[str, List[float]] = {name: [] for name in named}
+    for line_no, row in enumerate(rows[1:], start=2):
+        if len(row) > len(header):
+            raise ValueError(f"{path}:{line_no}: more cells than header columns")
+        for index, cell in enumerate(row + [""] * (len(header) - len(row))):
+            name, cell = header[index], cell.strip()
+            if not name:
+                if cell:
+                    raise ValueError(
+                        f"{path}:{line_no}: value {cell!r} in column {index + 1},"
+                        " which has no name in the header row")
+                continue
+            try:
+                columns[name].append(float(cell) if cell else math.nan)
+            except ValueError:
+                raise ValueError(
+                    f"{path}:{line_no}: non-numeric probability {cell!r} in column {name!r}") from None
+    return {name: np.asarray(values, dtype=float) for name, values in columns.items()}
+
+
 def load_probs_from_file(path: str) -> Dict[str, np.ndarray]:
+    """Load one probability column per basic-event id from CSV or Excel.
+
+    CSV needs only the standard library. Excel needs the optional
+    ``faultree[excel]`` extra (pandas + openpyxl), imported on demand."""
     if not os.path.exists(path):
          raise ValueError(f"File not found: {path}")
 
     if path.endswith('.csv'):
-        df = pd.read_csv(path)
-    elif path.endswith(('.xls', '.xlsx')):
+        return _read_csv_columns(path)
+    if path.endswith(('.xls', '.xlsx')):
+        try:
+            import pandas as pd
+        except ImportError as e:
+            raise ImportError(
+                "Reading Excel probability files needs pandas and openpyxl: "
+                'pip install "faultree[excel]" (or use a CSV file).') from e
         df = pd.read_excel(path)
-    else:
-        raise ValueError("Unsupported file format. Use CSV or Excel.")
-
-    return {str(col): df[col].values for col in df.columns}
+        return {str(col): df[col].values for col in df.columns}
+    raise ValueError("Unsupported file format. Use CSV or Excel.")
 
 
 def align_probabilities(probs: Dict[str, Any], shuffle: bool = False,
@@ -651,7 +697,7 @@ def _validate_probs(tree: Dict[str, Any], probs: Dict[str, Any], allow_missing: 
     if non_finite:
         problems.append(
             "non-finite (NaN/inf) values for: " + ", ".join(non_finite)
-            + " (note: pandas pads ragged CSV/Excel columns with NaN —"
+            + " (note: ragged CSV/Excel columns are padded with NaN —"
             " columns must have equal length)")
     if invalid_shape:
         problems.append("probabilities must be finite scalars or non-empty "
@@ -737,6 +783,30 @@ def quantify_compiled(compiled: CompiledTree,
     }
 
 
+def to_jsonable(value: Any) -> Any:
+    """Convert results to strict-JSON types: numpy scalars/arrays become
+    native numbers/lists and non-finite floats (an ``inf`` RRW, an undefined
+    0/0 ratio) become ``None``, i.e. JSON ``null``."""
+    if isinstance(value, np.ndarray):
+        return [to_jsonable(item) for item in value.tolist()]
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {key: to_jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [to_jsonable(item) for item in value]
+    return value
+
+
+def _ratio(numerator: Any, denominator: Any) -> Any:
+    """Elementwise numerator / denominator: x/0 -> inf, 0/0 -> NaN, no warnings."""
+    with np.errstate(divide="ignore", invalid="ignore"):
+        value = np.true_divide(numerator, denominator)
+    return float(value) if np.ndim(value) == 0 else value
+
+
 def analyze(tree: Dict[str, Any], probs_by_id: Union[Dict[str, Any], str, None] = None,
             ordering: Optional[List[str]] = None, *, use_names: bool = False,
             success_mode: bool = False, shuffle: bool = False,
@@ -749,6 +819,27 @@ def analyze(tree: Dict[str, Any], probs_by_id: Union[Dict[str, Any], str, None] 
     Birnbaum importance is their signed difference. Its sign is retained: XOR
     and other non-monotonic logic can make forcing a failure less likely to
     produce the top event.
+
+    ``importance[event]`` adds the usual failure-space measures, all exact
+    (computed on the BDD, no cut-set approximation), with ``Q1``/``Q0`` the
+    conditional probabilities above and ``q`` the event probability:
+
+    - ``birnbaum`` = Q1 - Q0;
+    - ``criticality`` = birnbaum * q / Q = (Q - Q0) / Q = 1 - 1/RRW, the
+      (failure-oriented) criticality importance of Rausand & Hoyland. PRA
+      codes often report this risk-decrease ratio as "Fussell-Vesely", but
+      it is not Fussell's cut-set definition, P(some minimal cut set
+      containing the event has failed | top event): for coherent trees that
+      value is >= criticality and the two agree only when cut-set
+      probabilities are small (rare-event approximation);
+    - ``raw`` (risk achievement worth) = Q1 / Q;
+    - ``rrw`` (risk reduction worth) = Q / Q0 (``inf`` when Q0 = 0).
+
+    Undefined ratios (0/0) are NaN. For non-coherent logic (XOR) the same
+    formulas hold, but criticality can be negative and RAW or RRW below 1,
+    and the probabilistic readings of the coherent case no longer apply. In
+    ``success_mode`` the result is a reliability, for which these
+    failure-space ratios are not defined, so ``importance`` is ``None``.
     """
     compiled = compile_tree(tree, ordering, use_names=use_names,
                             success_mode=success_mode)
@@ -773,10 +864,23 @@ def analyze(tree: Dict[str, Any], probs_by_id: Union[Dict[str, Any], str, None] 
         conditional_q[event_id] = {"true": q_true, "false": q_false}
         birnbaum[event_id] = q_true - q_false
     top_id = str(compiled.tree["id"])
+    importance = None
+    if not success_mode:
+        top_q = probabilities[top_id]
+        importance = {
+            event_id: {
+                "birnbaum": birnbaum[event_id],
+                "criticality": _ratio(birnbaum[event_id] * base_probs.get(event_id, 0.0), top_q),
+                "raw": _ratio(conditional_q[event_id]["true"], top_q),
+                "rrw": _ratio(top_q, conditional_q[event_id]["false"]),
+            }
+            for event_id in birnbaum
+        }
     return {
         "Q": probabilities[top_id],
         "conditional_Q": conditional_q,
         "birnbaum": birnbaum,
+        "importance": importance,
         "assumptions": {
             "basic_event_independence": True,
             "variable_order": list(compiled.ordering),

@@ -3,19 +3,9 @@ import json
 import sys
 import os
 import numpy as np
-from .builder import analyze, build, compute_event_probabilities, normalize_tree
+from .builder import analyze, build, compute_event_probabilities, normalize_tree, to_jsonable
+from .cutsets import minimal_cut_sets
 
-
-def _to_jsonable(value):
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, np.generic):
-        return value.item()
-    if isinstance(value, dict):
-        return {key: _to_jsonable(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_to_jsonable(item) for item in value]
-    return value
 
 def main() -> None:
     p = argparse.ArgumentParser(description="Build OBDD from FTA JSON and evaluate probabilities.")
@@ -28,7 +18,9 @@ def main() -> None:
     p.add_argument("--seed", type=int, default=0, help="Random seed for sample shuffling or explicit resampling (default: 0)")
     p.add_argument("--resample-independent", action="store_true", help="Explicitly bootstrap unequal sample vectors as independent marginals (destroys joint alignment)")
     p.add_argument("--assume-missing-zero", action="store_true", help="Treat basic events with no probability as 0.0 instead of raising an error")
-    p.add_argument("--structured", action="store_true", help="Print structured JSON with Q, conditional Q, signed Birnbaum importance, and assumptions")
+    p.add_argument("--structured", action="store_true", help="Print structured JSON with Q, conditional Q, importance measures (Birnbaum, criticality, RAW, RRW), and assumptions")
+    p.add_argument("--cut-sets", nargs="?", const="6", default=None, metavar="MAX_ORDER",
+                   help="Print the minimal cut sets as JSON (monotone AND/OR/K_OF_N trees; default max order 6) and exit")
     p.add_argument("--serve", action="store_true", help="Run the API server")
     p.add_argument("--host", default="127.0.0.1", help="API host (default: 127.0.0.1; use 0.0.0.0 to expose on all interfaces)")
     p.add_argument("--port", type=int, default=8000, help="API port (default: 8000)")
@@ -46,6 +38,19 @@ def main() -> None:
         run_server(host=args.host, port=args.port)
         return
 
+    if args.cut_sets is not None:
+        try:
+            args.cut_sets = int(args.cut_sets)
+        except ValueError:
+            # "faultree --cut-sets tree.json": the optional MAX_ORDER swallowed
+            # the file name, so give it back and use the default order.
+            if args.json_file:
+                p.error(f"argument --cut-sets: invalid int value: {args.cut_sets!r}")
+            args.json_file, args.cut_sets = args.cut_sets, 6
+        if args.reliability:
+            p.error("--cut-sets lists failure cut sets of the fault tree;"
+                    " it cannot be combined with --reliability")
+
     if not args.json_file:
         p.error("the following arguments are required: json_file (unless --serve is used)")
 
@@ -57,7 +62,7 @@ def main() -> None:
     except json.JSONDecodeError as e:
         sys.exit(f"Error: '{args.json_file}' is not valid JSON: {e}")
 
-    if not args.structured:
+    if not args.structured and args.cut_sets is None:
         if args.reliability:
             print("Mode: Reliability Analysis (Dual Tree)")
         else:
@@ -86,13 +91,18 @@ def main() -> None:
             else:
                 prob_input = prob_file
 
+        if args.cut_sets is not None:
+            result = minimal_cut_sets(tree, max_order=args.cut_sets)
+            print(json.dumps(result, indent=2))
+            return
+
         if args.structured:
             result = analyze(
                 tree, prob_input, args.ordering, use_names=args.use_names,
                 success_mode=args.reliability, shuffle=args.shuffle,
                 seed=args.seed, allow_missing=args.assume_missing_zero,
                 resample_independent=args.resample_independent)
-            print(json.dumps(_to_jsonable(result), indent=2, sort_keys=True))
+            print(json.dumps(to_jsonable(result), indent=2, sort_keys=True))
             return
 
         bdd, top, expr, symb = build(tree, args.ordering, use_names=args.use_names, success_mode=args.reliability)
@@ -106,7 +116,7 @@ def main() -> None:
             success_mode=args.reliability, shuffle=args.shuffle,
             seed=args.seed, allow_missing=args.assume_missing_zero,
             resample_independent=args.resample_independent)
-    except (ValueError, KeyError, TypeError) as e:
+    except (ValueError, KeyError, TypeError, ImportError) as e:
         sys.exit(f"Error: {e}")
     except RecursionError:
         sys.exit("Error: tree is too deep for the recursive engine"
