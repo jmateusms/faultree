@@ -145,6 +145,8 @@ class TestExamples(unittest.TestCase):
             ("kn_simple.json", True),
             ("kn_big.json", False),
             ("kn_big.json", True),
+            ("pressure_tank.json", False),
+            ("pressure_tank.json", True),
             ("xor_kn_big.json", False),
             ("xor_kn_big.json", True),
             ("xor_kn_big_linear.json", False),

@@ -37,9 +37,17 @@ faultree = "faultree.cli:main"
 Homepage = "https://github.com/jmateusms/faultree"
 
 # Explicit, so a stray top-level directory (e.g. the git-ignored misc/ scratch
-# dir) doesn't break flat-layout auto-discovery.
-[tool.setuptools.packages.find]
-include = ["faultree*"]
+# dir) doesn't break flat-layout auto-discovery. The repository's examples/
+# ship inside the package as faultree/examples, for the GUI's examples menu.
+[tool.setuptools]
+packages = ["faultree", "faultree.gui", "faultree.examples"]
+
+[tool.setuptools.package-dir]
+"faultree.examples" = "examples"
+
+[tool.setuptools.package-data]
+"faultree.gui" = ["static/*"]
+"faultree.examples" = ["*.json", "*.csv"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

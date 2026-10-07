@@ -14,6 +14,75 @@ A Python tool for Fault Tree Analysis (FTA) using Ordered Binary Decision Diagra
 - Probabilities can be scalars or sample arrays (evaluated elementwise), given
   inline, as a JSON mapping, or loaded from CSV/Excel files.
 
+## Graphical interface
+
+`faultree gui` (or `python -m faultree gui`) opens a local web app in the
+browser: load or build a tree, give the basic events probabilities or
+distributions, and explore the exact results without writing code.
+
+```bash
+faultree gui                            # http://127.0.0.1:8765/, or a free port
+faultree gui --port 9000 --no-browser   # choose the port; open the page yourself
+```
+
+It runs entirely on your computer: a small standard-library server, bound to
+127.0.0.1, serves the page and calls `analyze()` and `minimal_cut_sets()`.
+Nothing is loaded from the internet (it works offline) and it needs no extra
+dependency. Ctrl+C stops it. The interface is in Portuguese and English: it
+follows the browser's language, and the PT/EN switch changes it.
+
+![The pressure tank in the GUI: model on the left, probabilities on the tree on the right](docs/gui/tree.png)
+
+The model is on the left:
+
+- **Tree**: the editor. Select a node to add basic events or gates, change
+  the gate (AND, OR, XOR = exactly one, k-out-of-n), share a basic event
+  between branches, or add a clone of a gate (faultree's `ref`); undo and
+  redo with Ctrl+Z / Ctrl+Shift+Z.
+- **Probabilities**: the point probability of every basic event and,
+  optionally, a distribution for the uncertainty analysis (lognormal by
+  median and error factor, beta, uniform, log-uniform); a CSV/Excel
+  probability file can be imported (one column per event; one row gives point
+  values, several rows give joint sample vectors).
+- **JSON**: the model in faultree's format, to edit or paste (recursive or
+  flat) and apply.
+- The top bar opens the examples in `examples/` and JSON files, saves the
+  model in the recursive or the flat format, and switches between failure
+  analysis (Q) and success analysis (R, with reliabilities as inputs).
+
+The results are on the right, recomputed as you edit:
+
+- A summary: exact Q (or R) and its complement, the number of minimal cut
+  sets with the completeness flag, the model and BDD sizes, and the
+  uncertainty band once it has been run.
+- **Tree**: the exact probability of every event drawn on the tree (one-hue,
+  logarithmic colour scale), with the values on hover.
+- **Minimal cut sets**: a sortable table (order, probability, share of Q),
+  the largest contributions, the completeness flag and maximum order, and the
+  rare-event sum and min-cut upper bound next to the exact Q. Hovering a row
+  marks its events on the model tree.
+- **Importance**: Birnbaum, criticality, RAW and RRW of every basic event as
+  sortable bars, and a RAW × RRW (or Birnbaum × criticality) scatter with the
+  usual screening thresholds.
+- **What if?**: click basic events to set them failed or working; Q and every
+  gate are recomputed exactly, with the ratio to the base Q.
+- **Uncertainty**: draws joint samples of the events that have a
+  distribution, propagates them exactly as sample vectors, and shows the
+  histogram or CDF of Q with its 5/50/95 % percentiles, mean and point value,
+  and the spread of each importance measure per event. Runs are reproducible:
+  each event draws from `numpy.random.default_rng([seed, zlib.crc32(event_id)])`.
+- **Expression and BDD**: faultree's expression and symbolic forms and, for
+  small trees, the BDD with the probability of each node (the Shannon
+  recursion behind the exact result).
+- **Export results** saves a JSON with the model, settings, point results,
+  what-if scenario and uncertainty run; every chart has SVG and PNG buttons.
+
+The GUI keeps an event's distribution in an `uncertainty` field
+(`{"dist": "lognormal", "median": 1e-3, "ef": 3}`) and an optional Portuguese
+name in `name_pt`; the engine ignores both. `examples/pressure_tank.json` is
+the pressure tank of the NRC Fault Tree Handbook (NUREG-0492), with
+illustrative probabilities. More screenshots are in [docs/gui](docs/gui).
+
 ## Installation
 
 Requires Python ≥ 3.10.
@@ -85,6 +154,12 @@ faultree examples/basic_tree.json --probs '{"BE1": 0.05}'
 faultree examples/fta4b.json --probs examples/fta4b_probs.csv
 ```
 
+A probability CSV has a header row of basic-event ids and one row per sample.
+Columns may be separated by `,`, `;` or a tab; with `;` or a tab, decimal
+commas (`0,05`) are read as well, which is what Excel writes in pt-BR and
+other comma-decimal locales. The `.csv`/`.xlsx` extension is not
+case-sensitive.
+
 Reliability analysis (dual/success tree). The tree keeps its failure-logic
 structure, but inputs are interpreted as reliabilities and the result is the
 system success probability `R = 1 - Q`:
@@ -152,6 +227,7 @@ curl -X POST http://localhost:8000/analyze \
   (cycles are detected and rejected).
 - **API**: FastAPI server (`/analyze`, `/health`) for integrating with other
   tools.
+- **GUI**: `faultree gui`, a local web interface (standard library only).
 
 ## Development
 
@@ -176,7 +252,11 @@ XOR duality, cycle detection, input validation, server behavior).
 - **Common-Cause Failure**: beta-factor / MGL / alpha-factor groups.
 - **Transfer Symbols**: Split trees across multiple files (`transfer_in`).
 - **Open-PSA MEF**: import/export for ecosystem interoperability.
-- **Frontend**: Web UI for visualization and analysis.
+- **Frontend**: the local GUI (`faultree gui`) covers editing, exact results,
+  cut sets, importance, what-if and uncertainty. Next: navigation of large
+  trees (collapse branches, search), state-of-knowledge correlation between
+  identical components in the uncertainty analysis, and a Pyodide build that
+  needs no local server.
 
 ## Notes
 - Assumes independent basic events.

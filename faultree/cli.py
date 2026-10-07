@@ -7,8 +7,17 @@ from .builder import analyze, build, compute_event_probabilities, normalize_tree
 from .cutsets import minimal_cut_sets
 
 
-def main() -> None:
-    p = argparse.ArgumentParser(description="Build OBDD from FTA JSON and evaluate probabilities.")
+def main(argv=None) -> None:
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ["gui"]:
+        # "faultree gui [--port N] [--no-browser]": the graphical interface.
+        # (A tree file named "gui" can still be passed as ./gui.)
+        from .gui.server import main as gui_main
+        sys.exit(gui_main(argv[1:]))
+
+    p = argparse.ArgumentParser(
+        description="Build OBDD from FTA JSON and evaluate probabilities.",
+        epilog="Graphical interface: faultree gui [--port N] [--no-browser]")
     p.add_argument("json_file", nargs='?', help="Path to FTA JSON file")
     p.add_argument("--ordering", nargs='*', default=None, help="Optional variable ordering (basic event ids)")
     p.add_argument("--probs", type=str, default=None, help="JSON mapping of basic event id -> probability, or path to CSV/Excel file")
@@ -25,7 +34,7 @@ def main() -> None:
     p.add_argument("--host", default="127.0.0.1", help="API host (default: 127.0.0.1; use 0.0.0.0 to expose on all interfaces)")
     p.add_argument("--port", type=int, default=8000, help="API port (default: 8000)")
 
-    args = p.parse_args()
+    args = p.parse_args(argv)
 
     if args.serve:
         try:
