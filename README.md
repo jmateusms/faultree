@@ -25,8 +25,10 @@ pip install "faultree[excel]"   # + pandas/openpyxl to read Excel probability fi
 ```
 
 CSV probability files need no extra dependency. faultree uses `dd.autoref`,
-the pure-Python BDD backend of `dd`, so no C compiler or CUDD build is
-needed.
+the pure-Python BDD backend of `dd`, so no C compiler or CUDD is needed at
+run time, which also lets it run in the browser under Pyodide. PyPI has only
+Linux wheels and the source of `dd`; for Pyodide, build a pure-Python wheel
+first with `pip wheel dd --no-deps --no-binary dd`.
 
 From a checkout of this repository:
 
