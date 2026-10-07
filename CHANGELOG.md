@@ -3,6 +3,22 @@
 ## Unreleased
 
 ### Added
+- `faultree gui` (also `python -m faultree gui`, options `--port`,
+  `--no-browser`, `--host`): a local graphical interface served by a
+  standard-library HTTP server on 127.0.0.1, with no new dependency and
+  nothing loaded from the network. Tree editor (AND, OR, XOR, k-of-n, shared
+  events, `ref` clones, recursive and flat JSON), probability files, input
+  distributions (lognormal by median and error factor, beta, uniform,
+  log-uniform) sampled with a seed and propagated as joint sample vectors,
+  and a results dashboard: exact Q/R, probabilities on the tree, minimal cut
+  sets with completeness flag, importance bars and scatter, what-if
+  (conditional Q), distribution of Q with percentiles, importance spread, the
+  expressions and a BDD drawing. Results export as JSON and charts as SVG or
+  PNG. Interface in Portuguese and English.
+- `examples/pressure_tank.json`: the pressure tank of the NRC Fault Tree
+  Handbook (NUREG-0492), with illustrative probabilities and uncertainty.
+- The examples are packaged as `faultree/examples` (for the GUI's examples
+  menu in non-editable installs).
 - `analyze()` returns a structured, reproducible result: top-event `Q`,
   per-event probabilities, `conditional_Q` (top event with each basic event
   forced true/false), signed Birnbaum importance and the assumptions used
@@ -16,6 +32,12 @@
   probability sets; `benchmark_orderings()` to measure caller-given orders.
 - `minimal_cut_sets()` for monotone AND/OR/K-of-N trees, bounded and with an
   explicit `complete`/`truncated` flag; `--cut-sets [MAX_ORDER]` in the CLI.
+
+### Fixed
+- Probability CSV files separated by `;` (with decimal commas, as Excel
+  writes them in pt-BR) or by tabs are read instead of failing with a
+  misleading "more cells than header columns" error.
+- The `.csv`/`.xls`/`.xlsx` extension check is no longer case-sensitive.
 
 ### Changed
 - pandas and openpyxl are no longer required: CSV probability files are read

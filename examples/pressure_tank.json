@@ -1,0 +1,131 @@
+{
+  "id": "TOP",
+  "name": "Pressure tank rupture",
+  "name_pt": "Ruptura do tanque de pressão",
+  "note": "Pressure tank of the NRC Fault Tree Handbook (NUREG-0492, ch. VIII). The structure follows the handbook; the probabilities and their lognormal uncertainty (median, error factor) are illustrative, not from it.",
+  "note_pt": "Tanque de pressão do Fault Tree Handbook da NRC (NUREG-0492, cap. VIII). A estrutura segue o handbook; as probabilidades e a incerteza lognormal (mediana, fator de erro) são ilustrativas, não vêm dele.",
+  "event_type": "top",
+  "gate": "OR",
+  "children": [
+    {
+      "id": "T",
+      "name": "Tank rupture (primary failure)",
+      "name_pt": "Ruptura do tanque (falha primária)",
+      "event_type": "basic",
+      "gate": null,
+      "prob": 1e-05,
+      "uncertainty": {
+        "dist": "lognormal",
+        "median": 1e-05,
+        "ef": 10
+      },
+      "children": []
+    },
+    {
+      "id": "E2",
+      "name": "Tank overpressure: pump runs over 60 s",
+      "name_pt": "Sobrepressão: bomba ligada por mais de 60 s",
+      "event_type": "intermediate",
+      "gate": "OR",
+      "children": [
+        {
+          "id": "K2",
+          "name": "Relay K2 contacts fail to open",
+          "name_pt": "Contatos do relé K2 não abrem",
+          "event_type": "basic",
+          "gate": null,
+          "prob": 0.0003,
+          "uncertainty": {
+            "dist": "lognormal",
+            "median": 0.0003,
+            "ef": 3
+          },
+          "children": []
+        },
+        {
+          "id": "E3",
+          "name": "Relay K2 coil energized over 60 s",
+          "name_pt": "Bobina do relé K2 energizada por mais de 60 s",
+          "event_type": "intermediate",
+          "gate": "AND",
+          "children": [
+            {
+              "id": "S",
+              "name": "Pressure switch S contacts fail to open",
+              "name_pt": "Contatos do pressostato S não abrem",
+              "event_type": "basic",
+              "gate": null,
+              "prob": 0.01,
+              "uncertainty": {
+                "dist": "lognormal",
+                "median": 0.01,
+                "ef": 3
+              },
+              "children": []
+            },
+            {
+              "id": "E4",
+              "name": "Power stays on the switch S circuit",
+              "name_pt": "Circuito do pressostato S segue energizado",
+              "event_type": "intermediate",
+              "gate": "OR",
+              "children": [
+                {
+                  "id": "S1",
+                  "name": "Switch S1 contacts fail to open",
+                  "name_pt": "Contatos da chave S1 não abrem",
+                  "event_type": "basic",
+                  "gate": null,
+                  "prob": 0.003,
+                  "uncertainty": {
+                    "dist": "lognormal",
+                    "median": 0.003,
+                    "ef": 3
+                  },
+                  "children": []
+                },
+                {
+                  "id": "E5",
+                  "name": "Power through relay K1 contacts",
+                  "name_pt": "Energia pelos contatos do relé K1",
+                  "event_type": "intermediate",
+                  "gate": "OR",
+                  "children": [
+                    {
+                      "id": "K1",
+                      "name": "Relay K1 contacts fail to open",
+                      "name_pt": "Contatos do relé K1 não abrem",
+                      "event_type": "basic",
+                      "gate": null,
+                      "prob": 0.0003,
+                      "uncertainty": {
+                        "dist": "lognormal",
+                        "median": 0.0003,
+                        "ef": 3
+                      },
+                      "children": []
+                    },
+                    {
+                      "id": "R",
+                      "name": "Timer relay R fails to time out",
+                      "name_pt": "Relé temporizador R não desarma",
+                      "event_type": "basic",
+                      "gate": null,
+                      "prob": 0.001,
+                      "uncertainty": {
+                        "dist": "lognormal",
+                        "median": 0.001,
+                        "ef": 5
+                      },
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
