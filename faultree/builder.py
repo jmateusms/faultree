@@ -816,15 +816,21 @@ def analyze(tree: Dict[str, Any], probs_by_id: Union[Dict[str, Any], str, None] 
     conditional probabilities above and ``q`` the event probability:
 
     - ``birnbaum`` = Q1 - Q0;
-    - ``criticality`` = birnbaum * q / Q = (Q - Q0) / Q, which is also the
-      exact risk-reduction form of Fussell-Vesely (a cut-set-based FV can
-      differ slightly);
+    - ``criticality`` = birnbaum * q / Q = (Q - Q0) / Q = 1 - 1/RRW, the
+      (failure-oriented) criticality importance of Rausand & Hoyland. PRA
+      codes often report this risk-decrease ratio as "Fussell-Vesely", but
+      it is not Fussell's cut-set definition, P(some minimal cut set
+      containing the event has failed | top event): for coherent trees that
+      value is >= criticality and the two agree only when cut-set
+      probabilities are small (rare-event approximation);
     - ``raw`` (risk achievement worth) = Q1 / Q;
     - ``rrw`` (risk reduction worth) = Q / Q0 (``inf`` when Q0 = 0).
 
-    Undefined ratios (0/0) are NaN. In ``success_mode`` the result is a
-    reliability, for which these failure-space ratios are not defined, so
-    ``importance`` is ``None``.
+    Undefined ratios (0/0) are NaN. For non-coherent logic (XOR) the same
+    formulas hold, but criticality can be negative and RAW or RRW below 1,
+    and the probabilistic readings of the coherent case no longer apply. In
+    ``success_mode`` the result is a reliability, for which these
+    failure-space ratios are not defined, so ``importance`` is ``None``.
     """
     compiled = compile_tree(tree, ordering, use_names=use_names,
                             success_mode=success_mode)

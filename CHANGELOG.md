@@ -8,9 +8,10 @@
   forced true/false), signed Birnbaum importance and the assumptions used
   (variable order, seed, sample handling, version). Also `--structured` in
   the CLI and a `result` field in the API response.
-- `importance` in `analyze()`: criticality (= exact risk-reduction
-  Fussell-Vesely), RAW and RRW next to Birnbaum, exact on the BDD and
-  elementwise for sample vectors. Not defined (`None`) in success mode.
+- `importance` in `analyze()`: criticality `(Q − Q0)/Q` (the risk-decrease
+  form often reported as Fussell-Vesely, not the cut-set FV), RAW and RRW
+  next to Birnbaum, exact on the BDD and elementwise for sample vectors. Not
+  defined (`None`) in success mode.
 - `compile_tree()` / `quantify_compiled()` to compile once and quantify many
   probability sets; `benchmark_orderings()` to measure caller-given orders.
 - `minimal_cut_sets()` for monotone AND/OR/K-of-N trees, bounded and with an

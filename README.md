@@ -131,10 +131,12 @@ curl -X POST http://localhost:8000/analyze \
 - **Logic Gates**: AND, OR, XOR (exactly one), K-of-N (at least k).
 - **Exact quantification**: weighted model counting via the BDD cofactor
   recursion — linear in BDD size, exact for repeated/shared events.
-- **Importance measures** (`analyze()`, `--structured`): Birnbaum,
-  criticality (equal to the exact risk-reduction Fussell-Vesely), risk
-  achievement worth (RAW) and risk reduction worth (RRW), computed exactly on
-  the BDD for every basic event, also elementwise for sample vectors.
+- **Importance measures** (`analyze()`, `--structured`; fault-tree mode):
+  Birnbaum, criticality `(Q − Q0)/Q`, risk achievement worth (RAW) and risk
+  reduction worth (RRW), computed exactly on the BDD for every basic event,
+  also elementwise for sample vectors. Criticality equals the risk-decrease
+  form that PRA codes often call Fussell-Vesely (`1 − 1/RRW`); Fussell's
+  cut-set definition is larger and agrees with it only for rare events.
 - **Minimal cut sets** (`minimal_cut_sets()`, `--cut-sets`): bounded
   enumeration for monotone AND/OR/K-of-N trees, with an explicit
   completeness flag.

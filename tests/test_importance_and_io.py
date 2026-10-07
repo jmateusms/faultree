@@ -1,4 +1,5 @@
 import builtins
+from itertools import product
 import json
 import math
 import os
@@ -114,3 +115,71 @@ def test_cli_cut_sets_prints_minimal_cuts():
         expected = minimal_cut_sets(json.load(fh))
     assert payload["cut_sets"] == expected["cut_sets"]
     assert payload["complete"] is True
+
+
+def _fails(node, state):
+    """Failure-mode structure function, written independently of the engine."""
+    if "gate" not in node:
+        return state[node["id"]]
+    values = [_fails(child, state) for child in node["children"]]
+    gate = node["gate"]
+    if gate == "AND":
+        return all(values)
+    if gate == "OR":
+        return any(values)
+    if gate == "XOR":
+        return sum(values) == 1
+    if gate == "K_OF_N":
+        return sum(values) >= node["k"]
+    raise AssertionError(gate)
+
+
+def _enumerated_q(tree, probs, forced=None):
+    ids = sorted(probs)
+    total = 0.0
+    for values in product((False, True), repeat=len(ids)):
+        state = dict(zip(ids, values))
+        if forced is not None:
+            state[forced[0]] = forced[1]
+        weight = 1.0
+        for event_id, value in zip(ids, values):
+            if forced is not None and event_id == forced[0]:
+                continue
+            weight *= probs[event_id] if value else 1.0 - probs[event_id]
+        if forced is not None and values[ids.index(forced[0])]:
+            continue  # count each state of the other events once
+        total += weight * _fails(tree, state)
+    return total
+
+
+@pytest.mark.parametrize("gate", ["AND", "K_OF_N", "XOR"])
+def test_importance_matches_truth_table_with_repeated_events(gate):
+    probs = {"A": 0.3, "B": 0.6, "C": 0.7, "D": 0.1}
+    inner = {"id": "G2", "gate": gate, "children": [
+        leaf("A", probs["A"]), leaf("C", probs["C"]), leaf("D", probs["D"])]}
+    if gate == "K_OF_N":
+        inner["k"] = 2
+    tree = {"id": "TOP", "gate": "OR", "children": [
+        {"id": "G1", "gate": "AND", "children": [leaf("A", probs["A"]), leaf("B", probs["B"])]},
+        inner,
+    ]}
+    result = analyze(tree)
+    q = _enumerated_q(tree, probs)
+    assert result["Q"] == pytest.approx(q)
+    for event_id, p in probs.items():
+        q1 = _enumerated_q(tree, probs, (event_id, True))
+        q0 = _enumerated_q(tree, probs, (event_id, False))
+        imp = result["importance"][event_id]
+        assert imp["birnbaum"] == pytest.approx(q1 - q0)
+        assert imp["criticality"] == pytest.approx((q1 - q0) * p / q)
+        assert imp["raw"] == pytest.approx(q1 / q)
+        if q0 == 0:  # e.g. A guards every cut set when G2 is an AND gate
+            assert math.isinf(imp["rrw"]) and imp["criticality"] == pytest.approx(1.0)
+        else:
+            assert imp["rrw"] == pytest.approx(q / q0)
+            assert imp["criticality"] == pytest.approx(1 - 1 / imp["rrw"])
+    if gate == "XOR":
+        # Non-coherent: failing D can make the top event less likely.
+        d = result["importance"]["D"]
+        assert d["birnbaum"] < 0 and d["criticality"] < 0 and d["raw"] < 1
+
