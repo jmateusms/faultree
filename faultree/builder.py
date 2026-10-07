@@ -4,9 +4,11 @@ from importlib.metadata import PackageNotFoundError, version
 from time import perf_counter
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 import csv
+import io
 import math
 import numpy as np
 import os
+import re
 
 try:
     from dd.autoref import BDD, Function
@@ -369,15 +371,36 @@ def var_probs_from_tree(tree: Dict[str, Any]) -> Dict[str, Any]:
     return probs
 
 
+_DECIMAL_COMMA = re.compile(r"^[+-]?(\d+,\d*|,\d+)([eE][+-]?\d+)?$")
+
+
+def _csv_delimiter(text: str) -> str:
+    """Column separator of a probability CSV, from its header line.
+
+    Spreadsheets in locales with a decimal comma (pt-BR Excel, for one)
+    write ';' between columns; tabs come from copy-and-paste. A header with
+    no separator at all is a single column, where a comma can only be a
+    decimal comma."""
+    header = next((line for line in text.splitlines() if line.strip()), "")
+    counts = {sep: header.count(sep) for sep in (",", ";", "\t")}
+    best = max(counts, key=lambda sep: (counts[sep], sep == ","))
+    return best if counts[best] else ";"
+
+
 def _read_csv_columns(path: str) -> Dict[str, np.ndarray]:
     """Read a header-plus-rows CSV into float columns without pandas.
 
-    Empty cells (e.g. a ragged column) become NaN so validation reports them,
-    exactly as the previous pandas-based reader did. Columns without a header
-    are ignored when they are empty too (trailing separators, as some
+    The separator is ',', ';' or a tab (see ``_csv_delimiter``); with ';' or
+    a tab, decimal commas such as ``0,05`` are read as ``0.05``. Empty cells
+    (e.g. a ragged column) become NaN so validation reports them, exactly as
+    the previous pandas-based reader did. Columns without a header are
+    ignored when they are empty too (trailing separators, as some
     spreadsheet exports write); an unnamed column holding values is an error."""
     with open(path, newline="", encoding="utf-8-sig") as fh:
-        rows = [row for row in csv.reader(fh) if any(cell.strip() for cell in row)]
+        text = fh.read()
+    delimiter = _csv_delimiter(text)
+    rows = [row for row in csv.reader(io.StringIO(text, newline=""), delimiter=delimiter)
+            if any(cell.strip() for cell in row)]
     if not rows:
         raise ValueError(f"Probability file is empty: {path}")
     header = [cell.strip() for cell in rows[0]]
@@ -389,7 +412,9 @@ def _read_csv_columns(path: str) -> Dict[str, np.ndarray]:
     columns: Dict[str, List[float]] = {name: [] for name in named}
     for line_no, row in enumerate(rows[1:], start=2):
         if len(row) > len(header):
-            raise ValueError(f"{path}:{line_no}: more cells than header columns")
+            hint = (" (with decimal commas, separate the columns with ';')"
+                    if delimiter == "," else "")
+            raise ValueError(f"{path}:{line_no}: more cells than header columns" + hint)
         for index, cell in enumerate(row + [""] * (len(header) - len(row))):
             name, cell = header[index], cell.strip()
             if not name:
@@ -398,6 +423,8 @@ def _read_csv_columns(path: str) -> Dict[str, np.ndarray]:
                         f"{path}:{line_no}: value {cell!r} in column {index + 1},"
                         " which has no name in the header row")
                 continue
+            if delimiter != "," and _DECIMAL_COMMA.match(cell):
+                cell = cell.replace(",", ".")
             try:
                 columns[name].append(float(cell) if cell else math.nan)
             except ValueError:
@@ -414,9 +441,10 @@ def load_probs_from_file(path: str) -> Dict[str, np.ndarray]:
     if not os.path.exists(path):
          raise ValueError(f"File not found: {path}")
 
-    if path.endswith('.csv'):
+    extension = os.path.splitext(path)[1].lower()
+    if extension == '.csv':
         return _read_csv_columns(path)
-    if path.endswith(('.xls', '.xlsx')):
+    if extension in ('.xls', '.xlsx'):
         try:
             import pandas as pd
         except ImportError as e:

@@ -229,3 +229,46 @@ def test_cli_reports_missing_excel_extra_without_traceback(tmp_path, monkeypatch
     with pytest.raises(SystemExit) as exc:
         cli.main()
     assert "faultree[excel]" in str(exc.value.code)
+
+
+def _write(tmp_path, name, text):
+    path = tmp_path / name
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
+
+def test_csv_with_semicolons_and_decimal_commas(tmp_path):
+    # The default CSV of a pt-BR Excel: ';' between columns, ',' for decimals.
+    path = _write(tmp_path, "probs.csv", "A;B;C\n0,1;0,25;1e-3\n0,2;0,5;2,5E-4\n")
+    columns = load_probs_from_file(path)
+    np.testing.assert_allclose(columns["A"], [0.1, 0.2])
+    np.testing.assert_allclose(columns["B"], [0.25, 0.5])
+    np.testing.assert_allclose(columns["C"], [1e-3, 2.5e-4])
+    tree = {"id": "TOP", "gate": "OR", "children": [leaf("A", None), leaf("B", None), leaf("C", None)]}
+    for node in tree["children"]:
+        del node["prob"]
+    np.testing.assert_allclose(analyze(tree, path)["Q"], 1 - (1 - columns["A"]) * (1 - columns["B"]) * (1 - columns["C"]))
+
+
+def test_csv_with_tabs_and_a_single_decimal_comma_column(tmp_path):
+    tabs = load_probs_from_file(_write(tmp_path, "tabs.csv", "A\tB\n0,1\t0.2\n"))
+    assert tabs["A"].tolist() == [0.1] and tabs["B"].tolist() == [0.2]
+    single = load_probs_from_file(_write(tmp_path, "one.csv", "A\n0,05\n0,07\n"))
+    np.testing.assert_allclose(single["A"], [0.05, 0.07])
+
+
+def test_comma_csv_keeps_its_rules_and_hints_at_decimal_commas(tmp_path):
+    plain = load_probs_from_file(_write(tmp_path, "plain.csv", "A,B\n0.1,0.2\n"))
+    assert plain["A"].tolist() == [0.1] and plain["B"].tolist() == [0.2]
+    with pytest.raises(ValueError, match="decimal commas"):
+        load_probs_from_file(_write(tmp_path, "mixed.csv", "A,B\n0,1,0,2\n"))
+    with pytest.raises(ValueError, match="non-numeric"):
+        load_probs_from_file(_write(tmp_path, "bad.csv", "A;B\n0,1;x\n"))
+
+
+def test_probability_file_extension_is_case_insensitive(tmp_path):
+    columns = load_probs_from_file(_write(tmp_path, "PROBS.CSV", "A,B\n0.1,0.2\n"))
+    assert columns["A"].tolist() == [0.1]
+    with pytest.raises(ValueError, match="Unsupported"):
+        load_probs_from_file(_write(tmp_path, "probs.txt", "A\n0.1\n"))
+
