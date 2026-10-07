@@ -195,3 +195,37 @@ def test_csv_trailing_separators_are_ignored_but_unnamed_values_are_not(tmp_path
     with pytest.raises(ValueError, match="no name"):
         load_probs_from_file(str(unnamed))
 
+
+def test_cli_cut_sets_accepts_file_after_flag_and_rejects_reliability():
+    def run(*args):
+        return subprocess.run([sys.executable, "-m", "faultree", *args],
+                              capture_output=True, text=True, cwd=REPO, check=False)
+
+    before = run("--cut-sets", "examples/basic_tree.json")
+    assert before.returncode == 0, before.stderr
+    assert json.loads(before.stdout)["limits"]["max_order"] == 6
+    ordered = run("--cut-sets", "1", "examples/basic_tree.json")
+    assert ordered.returncode == 0, ordered.stderr
+    assert json.loads(ordered.stdout)["cut_sets"] == []
+    rejected = run("examples/basic_tree.json", "--cut-sets", "--reliability")
+    assert rejected.returncode == 2
+    assert "--reliability" in rejected.stderr
+
+
+def test_cli_reports_missing_excel_extra_without_traceback(tmp_path, monkeypatch, capsys):
+    from faultree import cli
+
+    excel = _touch(tmp_path / "probs.xlsx")
+    real_import = builtins.__import__
+
+    def no_pandas(name, *args, **kwargs):
+        if name == "pandas" or name.startswith("pandas."):
+            raise ImportError("pandas blocked for this test")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_pandas)
+    monkeypatch.setattr(sys, "argv", [
+        "faultree", os.path.join(REPO, "examples", "basic_tree.json"), "--probs", str(excel)])
+    with pytest.raises(SystemExit) as exc:
+        cli.main()
+    assert "faultree[excel]" in str(exc.value.code)

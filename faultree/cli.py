@@ -19,7 +19,7 @@ def main() -> None:
     p.add_argument("--resample-independent", action="store_true", help="Explicitly bootstrap unequal sample vectors as independent marginals (destroys joint alignment)")
     p.add_argument("--assume-missing-zero", action="store_true", help="Treat basic events with no probability as 0.0 instead of raising an error")
     p.add_argument("--structured", action="store_true", help="Print structured JSON with Q, conditional Q, importance measures (Birnbaum, criticality, RAW, RRW), and assumptions")
-    p.add_argument("--cut-sets", type=int, nargs="?", const=6, default=None, metavar="MAX_ORDER",
+    p.add_argument("--cut-sets", nargs="?", const="6", default=None, metavar="MAX_ORDER",
                    help="Print the minimal cut sets as JSON (monotone AND/OR/K_OF_N trees; default max order 6) and exit")
     p.add_argument("--serve", action="store_true", help="Run the API server")
     p.add_argument("--host", default="127.0.0.1", help="API host (default: 127.0.0.1; use 0.0.0.0 to expose on all interfaces)")
@@ -37,6 +37,19 @@ def main() -> None:
         print(f"Starting Faultree API server on {args.host}:{args.port}...")
         run_server(host=args.host, port=args.port)
         return
+
+    if args.cut_sets is not None:
+        try:
+            args.cut_sets = int(args.cut_sets)
+        except ValueError:
+            # "faultree --cut-sets tree.json": the optional MAX_ORDER swallowed
+            # the file name, so give it back and use the default order.
+            if args.json_file:
+                p.error(f"argument --cut-sets: invalid int value: {args.cut_sets!r}")
+            args.json_file, args.cut_sets = args.cut_sets, 6
+        if args.reliability:
+            p.error("--cut-sets lists failure cut sets of the fault tree;"
+                    " it cannot be combined with --reliability")
 
     if not args.json_file:
         p.error("the following arguments are required: json_file (unless --serve is used)")
@@ -103,7 +116,7 @@ def main() -> None:
             success_mode=args.reliability, shuffle=args.shuffle,
             seed=args.seed, allow_missing=args.assume_missing_zero,
             resample_independent=args.resample_independent)
-    except (ValueError, KeyError, TypeError) as e:
+    except (ValueError, KeyError, TypeError, ImportError) as e:
         sys.exit(f"Error: {e}")
     except RecursionError:
         sys.exit("Error: tree is too deep for the recursive engine"
