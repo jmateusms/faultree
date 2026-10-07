@@ -373,22 +373,31 @@ def _read_csv_columns(path: str) -> Dict[str, np.ndarray]:
     """Read a header-plus-rows CSV into float columns without pandas.
 
     Empty cells (e.g. a ragged column) become NaN so validation reports them,
-    exactly as the previous pandas-based reader did."""
+    exactly as the previous pandas-based reader did. Columns without a header
+    are ignored when they are empty too (trailing separators, as some
+    spreadsheet exports write); an unnamed column holding values is an error."""
     with open(path, newline="", encoding="utf-8-sig") as fh:
         rows = [row for row in csv.reader(fh) if any(cell.strip() for cell in row)]
     if not rows:
         raise ValueError(f"Probability file is empty: {path}")
     header = [cell.strip() for cell in rows[0]]
-    duplicated = sorted({name for name in header if header.count(name) > 1})
-    if duplicated or "" in header:
-        raise ValueError(f"{path}: column names must be unique and non-empty"
-                         + (f" (repeated: {', '.join(duplicated)})" if duplicated else ""))
-    columns: Dict[str, List[float]] = {name: [] for name in header}
+    named = [name for name in header if name]
+    duplicated = sorted({name for name in named if named.count(name) > 1})
+    if duplicated:
+        raise ValueError(f"{path}: column names must be unique"
+                         f" (repeated: {', '.join(duplicated)})")
+    columns: Dict[str, List[float]] = {name: [] for name in named}
     for line_no, row in enumerate(rows[1:], start=2):
         if len(row) > len(header):
             raise ValueError(f"{path}:{line_no}: more cells than header columns")
-        for name, cell in zip(header, row + [""] * (len(header) - len(row))):
-            cell = cell.strip()
+        for index, cell in enumerate(row + [""] * (len(header) - len(row))):
+            name, cell = header[index], cell.strip()
+            if not name:
+                if cell:
+                    raise ValueError(
+                        f"{path}:{line_no}: value {cell!r} in column {index + 1},"
+                        " which has no name in the header row")
+                continue
             try:
                 columns[name].append(float(cell) if cell else math.nan)
             except ValueError:

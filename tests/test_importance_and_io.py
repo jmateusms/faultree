@@ -183,3 +183,15 @@ def test_importance_matches_truth_table_with_repeated_events(gate):
         d = result["importance"]["D"]
         assert d["birnbaum"] < 0 and d["criticality"] < 0 and d["raw"] < 1
 
+
+def test_csv_trailing_separators_are_ignored_but_unnamed_values_are_not(tmp_path):
+    trailing = tmp_path / "trailing.csv"
+    trailing.write_text("A,B,\n0.1,0.2,\n0.3,0.4,\n")
+    probs = load_probs_from_file(str(trailing))
+    assert sorted(probs) == ["A", "B"]
+    np.testing.assert_allclose(probs["B"], [0.2, 0.4])
+    unnamed = tmp_path / "unnamed.csv"
+    unnamed.write_text("A,,B\n0.1,0.5,0.2\n")
+    with pytest.raises(ValueError, match="no name"):
+        load_probs_from_file(str(unnamed))
+
