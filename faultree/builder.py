@@ -379,6 +379,10 @@ def _read_csv_columns(path: str) -> Dict[str, np.ndarray]:
     if not rows:
         raise ValueError(f"Probability file is empty: {path}")
     header = [cell.strip() for cell in rows[0]]
+    duplicated = sorted({name for name in header if header.count(name) > 1})
+    if duplicated or "" in header:
+        raise ValueError(f"{path}: column names must be unique and non-empty"
+                         + (f" (repeated: {', '.join(duplicated)})" if duplicated else ""))
     columns: Dict[str, List[float]] = {name: [] for name in header}
     for line_no, row in enumerate(rows[1:], start=2):
         if len(row) > len(header):

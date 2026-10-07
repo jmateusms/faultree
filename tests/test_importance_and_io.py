@@ -94,6 +94,10 @@ def test_csv_ragged_and_non_numeric_cells_are_reported(tmp_path):
     tree = {"id": "TOP", "gate": "OR", "children": [{"id": "A"}, {"id": "B"}]}
     with pytest.raises(ValueError, match="non-finite"):
         analyze(tree, str(ragged))
+    dup = tmp_path / "dup.csv"
+    dup.write_text("A,A\n0.1,0.2\n")
+    with pytest.raises(ValueError, match="unique"):
+        load_probs_from_file(str(dup))
     bad = tmp_path / "bad.csv"
     bad.write_text("A\nabc\n")
     with pytest.raises(ValueError, match="non-numeric"):
