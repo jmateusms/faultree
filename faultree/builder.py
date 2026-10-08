@@ -762,7 +762,7 @@ def _faultree_version() -> str:
         return version("faultree")
     except PackageNotFoundError:
         # Useful for source checkouts that have not been installed yet.
-        return "0.3.0"
+        return "0.4.0"
 
 
 def compile_tree(tree: Dict[str, Any], ordering: Optional[List[str]] = None,

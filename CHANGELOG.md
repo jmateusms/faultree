@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 — 2026-10-08
 
 ### Added
 - `faultree gui` (also `python -m faultree gui`, options `--port`,
