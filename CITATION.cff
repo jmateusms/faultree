@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "Se usar este software num trabalho, cite-o como abaixo. If you use this software, please cite it as below."
+type: software
+title: "faultree: exact fault tree analysis with binary decision diagrams"
+abstract: "Exact top-event probability of fault trees via binary decision diagrams, minimal cut sets, importance measures, uncertainty propagation by joint samples, and a local graphical interface."
+authors:
+  - family-names: Santana
+    given-names: Mateus
+    email: jmateussan@gmail.com
+    affiliation: "Universidade Federal de Pernambuco (UFPE), Departamento de Engenharia de Produção, CEERMA"
+version: "0.4.0"
+date-released: "2026-10-08"
+license: BSD-3-Clause
+repository-code: "https://github.com/jmateusms/faultree"
+keywords:
+  - reliability
+  - fault tree analysis
+  - binary decision diagrams
+  - importance measures
+  - risk analysis
