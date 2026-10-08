@@ -31,7 +31,7 @@ Nothing is loaded from the internet (it works offline) and it needs no extra
 dependency. Ctrl+C stops it. The interface is in Portuguese and English: it
 follows the browser's language, and the PT/EN switch changes it.
 
-![The pressure tank in the GUI: model on the left, probabilities on the tree on the right](docs/gui/tree.png)
+![The pressure tank in the GUI: model on the left, probabilities on the tree on the right](https://raw.githubusercontent.com/jmateusms/faultree/main/docs/gui/tree.png)
 
 The model is on the left:
 
@@ -94,7 +94,7 @@ name in `name_pt`; the engine ignores them and reads `prob`, which the GUI
 saves as F(t) at the mission time. `examples/pressure_tank.json` is the
 pressure tank of the NRC Fault Tree Handbook (NUREG-0492), with illustrative
 probabilities; `examples/cooling_system.json` uses every kind of failure
-model. More screenshots are in [docs/gui](docs/gui).
+model. More screenshots are in [docs/gui](https://github.com/jmateusms/faultree/tree/main/docs/gui).
 
 ## Installation
 
