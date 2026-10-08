@@ -36,6 +36,7 @@
   <div class="status" id="status" aria-live="polite"></div>
   <div class="appright">
     <button type="button" id="btnExport" class="btn sm" data-i18n="file.exportResults">Export results</button>
+    <button type="button" id="btnSettings" class="iconbtn gear" data-i18n-title="set.title" aria-label="Settings" data-i18n-aria-label="set.title">⚙</button>
     <span class="seg lang" aria-label="Language">
       <button type="button" data-lang="pt">PT</button><button type="button" data-lang="en">EN</button>
     </span>
@@ -70,6 +71,12 @@
     <div class="ltab" id="ltab-probs" hidden>
       <p class="hint" data-i18n="probs.intro">Point probability of each basic event, and optionally a distribution for the uncertainty analysis.</p>
       <div class="bar">
+        <label class="inline"><span data-i18n="probs.time">Mission time t</span>
+          <input type="text" id="missionTime" size="8" inputmode="decimal" spellcheck="false"></label>
+        <select id="timeUnit" aria-label="Time unit" data-i18n-aria-label="probs.unit"></select>
+        <span class="hint" id="timeNote" style="margin:0"></span>
+      </div>
+      <div class="bar">
         <button type="button" class="btn ghost sm" id="btnProbFile" data-i18n="probs.import">Import CSV/Excel…</button>
         <input type="file" id="probFile" accept=".csv,.xlsx,.xls,.CSV,.XLSX,.XLS" hidden>
         <span class="sep"></span>
@@ -80,6 +87,7 @@
       </div>
       <p class="msg" id="probMsg"></p>
       <div class="tablebox"><table class="events" id="eventsTable"></table></div>
+      <p class="hint" data-i18n="probs.modelHelp">Failure models.</p>
       <p class="hint" data-i18n="probs.distHelp">Lognormal: median and error factor EF = p95/p50. Beta: a, b. Uniform and log-uniform: lower and upper bounds.</p>
     </div>
 
@@ -116,5 +124,32 @@
     <div class="rtab" id="rtab-expr" hidden></div>
   </section>
 </main>
+
+<dialog id="settingsDlg" class="dlg" aria-labelledby="setTitle">
+  <form method="dialog">
+    <h2 id="setTitle" data-i18n="set.title">Settings</h2>
+    <fieldset>
+      <legend data-i18n="set.shared">Shared events and cloned gates</legend>
+      <p class="hint" data-i18n="set.sharedHint">Every occurrence of the same event carries the same marker.</p>
+      <div class="choices">
+        <label class="choice"><input type="radio" name="shared" value="letter"><span data-i18n="set.letter">Letter and colour</span><span class="pv" data-preview="letter"></span></label>
+        <label class="choice"><input type="radio" name="shared" value="color"><span data-i18n="set.color">Colour only</span><span class="pv" data-preview="color"></span></label>
+        <label class="choice"><input type="radio" name="shared" value="count"><span data-i18n="set.count">Number of occurrences</span><span class="pv" data-preview="count"></span></label>
+      </div>
+      <label class="inline"><input type="checkbox" id="setTwins"><span data-i18n="set.twins">Highlight every occurrence on hover</span></label>
+    </fieldset>
+    <fieldset>
+      <legend data-i18n="set.numbers">Probabilities</legend>
+      <label class="inline"><input type="radio" name="notation" value="auto"><span data-i18n="set.auto">Automatic</span></label>
+      <label class="inline"><input type="radio" name="notation" value="sci"><span data-i18n="set.sci">Scientific</span></label>
+    </fieldset>
+    <p class="hint" data-i18n="set.saved">Saved in this browser.</p>
+    <div class="btnrow">
+      <button type="button" class="btn ghost sm" id="setReset" data-i18n="set.reset">Restore defaults</button>
+      <span class="grow"></span>
+      <button type="submit" class="btn sm" data-i18n="set.close">Close</button>
+    </div>
+  </form>
+</dialog>
 </body>
 </html>

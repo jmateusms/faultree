@@ -2,13 +2,14 @@
 // The layout and symbols come from the lab's fault-tree page: leaves on
 // slots, parents centred over their children; rectangles for top and
 // intermediate events, circles for basic events, diamonds for undeveloped
-// events and triangles for gate clones (faultree refs).
-import { svgEl, svgText, trunc, fmtP, C, FONT, bindTip, isDark } from "./util.js";
+// events and triangles for gate clones (faultree refs). Shared events and
+// cloned gates carry a marker (see settings.js) in a colour of their own.
+import { svgEl, svgText, trunc, fmtP, C, FONT, bindTip, isDark, sharedColor } from "./util.js";
 import { t } from "./i18n.js";
-import { walk, occurrences, dispName } from "./model.js";
+import { walk, sharedMarks, dispName } from "./model.js";
+import { SET } from "./settings.js";
 
 const SLOT = 132, LEVEL = 116, PADX = 14;
-const SHARED_COLORS = ["#1F5D6B", "#8A5A00", "#2C5F2D", "#6D2E46"];
 
 // Two lines of at most n characters, breaking at spaces when possible.
 export function wrap2(text, n) {
@@ -21,7 +22,8 @@ export function wrap2(text, n) {
 }
 
 export function layout(doc, mode = "edit") {
-  const TOPPAD = mode === "edit" ? 40 : 14;
+  const TOPPAD = mode === "edit" ? 40 : mode === "preview" ? 4 : 14;
+  const slotW = mode === "preview" ? 70 : SLOT; // the settings preview shows symbols only
   let slot = 0, maxDepth = 0;
   const items = [];
   (function place(n, depth, parent) {
@@ -31,10 +33,10 @@ export function layout(doc, mode = "edit") {
     if (n.t === "gate" && n.children.length) {
       it.kids = n.children.map((c) => place(c, depth + 1, it));
       it.x = (it.kids[0].x + it.kids[it.kids.length - 1].x) / 2;
-    } else { it.x = PADX + slot * SLOT + SLOT / 2; slot++; }
+    } else { it.x = PADX + slot * slotW + slotW / 2; slot++; }
     return it;
   })(doc.root, 0, null);
-  return { items, width: PADX * 2 + Math.max(slot, 2) * SLOT, height: TOPPAD + maxDepth * LEVEL + 104 };
+  return { items, width: PADX * 2 + Math.max(slot, 2) * slotW, height: TOPPAD + maxDepth * LEVEL + 104 };
 }
 
 function gateSymbol(g, x, ys, n, stroke, fill) {
@@ -51,9 +53,25 @@ function gateSymbol(g, x, ys, n, stroke, fill) {
 }
 export function gateDesc(g) { return t("gate.desc." + g); }
 
-// opts: mode ("edit" | "result" | "whatif"), zoom, selUid, probs (id -> p),
-// base (id -> p, what-if baseline), color (p -> fill), forced (id -> state),
-// highlight (Set of event ids), success (bool), onNode(node, evt), tip(node).
+// The marker badge of a shared item, centred at (x, y): its letter or its
+// number of occurrences; the "color" style has the coloured outline only.
+function markBadge(g, x, y, mk, color, style) {
+  if (style === "color") return;
+  const label = style === "count" ? "×" + mk.count : mk.letter;
+  const w = Math.max(18, 8 + label.length * 7.5);
+  svgEl("rect", { x: x - w / 2, y: y - 9, width: w, height: 18, rx: 9, fill: color, stroke: "#FFFFFF", "stroke-width": 1.2 }, g);
+  svgText(g, x, y + 4.5, label, { "text-anchor": "middle", "font-size": 12, "font-weight": 700, fill: "#FFFFFF" });
+}
+// A halo shown (by CSS) on every occurrence of the hovered or selected item.
+function twinRing(tag, attrs, color, g) {
+  svgEl(tag, { ...attrs, class: "twinRing", fill: "none", stroke: color, "stroke-width": 5, "stroke-opacity": 0.45,
+    visibility: "hidden", "data-noexport": "1" }, g);
+}
+
+// opts: mode ("edit" | "result" | "whatif" | "preview"), zoom, selUid,
+// probs (id -> p), base (id -> p, what-if baseline), color (p -> fill),
+// forced (id -> state), highlight (Set of event ids), success (bool),
+// sharedStyle (overrides the setting), onNode(node, evt), tip(node).
 export function renderTree(svg, doc, opts = {}) {
   const mode = opts.mode || "edit";
   svg.replaceChildren();
@@ -63,9 +81,11 @@ export function renderTree(svg, doc, opts = {}) {
   svg.setAttribute("width", Math.round(L.width * zoom));
   svg.setAttribute("height", Math.round(L.height * zoom));
   svg.setAttribute("font-family", FONT);
-  const occ = occurrences(doc);
-  const sharedIds = [...occ.entries()].filter(([, c]) => c > 1).map(([id]) => id);
-  const sharedColor = new Map(sharedIds.map((id, i) => [id, SHARED_COLORS[i % SHARED_COLORS.length]]));
+  const marks = sharedMarks(doc);
+  const style = opts.sharedStyle || SET.shared;
+  const keyOf = (n) => (n.t === "ref" ? n.ref : n.id);
+  let selKey = null;
+  if (mode === "edit" && opts.selUid != null) walk(doc.root, (n) => { if (n.uid === opts.selUid) selKey = keyOf(n); });
   const probs = opts.probs || null;
   const color = opts.color || null;
   const forced = opts.forced || {};
@@ -79,42 +99,60 @@ export function renderTree(svg, doc, opts = {}) {
     const g = svgEl("g", { class: "nd", "data-uid": n.uid, tabindex: 0, role: "button" }, nodes);
     const sel = mode === "edit" && n.uid === opts.selUid;
     if (sel) selItem = it;
-    const key = n.t === "ref" ? n.ref : n.id;
+    const key = keyOf(n);
+    const mk = marks.get(key);
+    const mc = mk ? sharedColor(mk) : null;
+    const msw = style === "color" ? 3.4 : 2.4;
+    if (mk) {
+      g.dataset.twin = key;
+      if (key === selKey && n.uid !== opts.selUid) g.classList.add("twinSel");
+      if (SET.twins && mode !== "preview") {
+        const twins = (on) => svg.querySelectorAll(`.nd[data-twin="${CSS.escape(key)}"]`).forEach((x) => x.classList.toggle("twin", on));
+        g.addEventListener("pointerenter", () => twins(true));
+        g.addEventListener("pointerleave", () => twins(false));
+        g.addEventListener("focus", () => twins(true));
+        g.addEventListener("blur", () => twins(false));
+      }
+    }
     const p = probs ? probs[key] : undefined;
     const fill = color && p != null ? color(p) : C.card;
     const txt = isDark(fill) ? "#FFFFFF" : C.ink;
     if (n.t === "gate") {
       const bw = 128, bh = 56, bx = it.x - bw / 2, by = it.y;
       svgEl("rect", { class: "focusRing", x: bx - 4, y: by - 4, width: bw + 8, height: bh + 42, rx: 6, fill: "none", stroke: "none" }, g);
+      if (mk) twinRing("rect", { x: bx - 5, y: by - 5, width: bw + 10, height: bh + 10, rx: 7 }, mc, g);
       svgEl("rect", { x: bx, y: by, width: bw, height: bh, rx: 3, fill,
-        stroke: sel ? C.accent : C.ink, "stroke-width": sel ? 2.6 : it.depth === 0 ? 2.2 : 1.2 }, g);
+        stroke: sel ? C.accent : mc || C.ink, "stroke-width": sel ? 2.6 : mk ? msw : it.depth === 0 ? 2.2 : 1.2 }, g);
       const lines = wrap2(dispName(n) || n.id, 20);
       lines.forEach((ln, i) => svgText(g, it.x, by + (lines.length > 1 ? 15 + i * 14 : 21), ln, { "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: txt }));
       const pTxt = p != null ? `${pLabel} = ${fmtP(p, 3)}` : "";
       svgText(g, it.x, by + 47, trunc(n.id, pTxt ? 7 : 16) + (pTxt ? " · " + pTxt : ""), { "text-anchor": "middle", "font-size": 11, class: "mono", fill: txt });
       svgEl("line", { x1: it.x, y1: by + bh, x2: it.x, y2: by + bh + 6, stroke: C.ink, "stroke-width": 1.5 }, g);
       const bottom = gateSymbol(g, it.x, by + bh + 6, n, C.ink, C.card);
-      for (const k of it.kids) {
+      for (const k of mode === "preview" ? [] : it.kids) {
         const bus = bottom + (k.y - bottom) * 0.45;
         svgEl("path", { d: `M${it.x},${bottom} V${bus} H${k.x} V${k.y}`, fill: "none", stroke: C.muted, "stroke-width": 1.2 }, edges);
       }
       if (!n.children.length) svgText(g, it.x, by + bh + 56, t("tree.noInputs"), { "text-anchor": "middle", "font-size": 11, fill: C.wine });
+      if (mk) markBadge(g, bx + bw - 2, by, mk, mc, style);
     } else if (n.t === "ref") {
       const cx = it.x, top = it.y + 2, h = 46, w = 54;
       svgEl("rect", { class: "focusRing", x: cx - 50, y: it.y - 3, width: 100, height: 92, rx: 6, fill: "none", stroke: "none" }, g);
-      svgEl("path", { d: `M${cx},${top} L${cx + w / 2},${top + h} L${cx - w / 2},${top + h} Z`, fill, stroke: sel ? C.accent : C.ink, "stroke-width": sel ? 2.6 : 1.4 }, g);
+      if (mk) twinRing("path", { d: `M${cx},${top - 9} L${cx + w / 2 + 8},${top + h + 5} L${cx - w / 2 - 8},${top + h + 5} Z`, "stroke-linejoin": "round" }, mc, g);
+      svgEl("path", { d: `M${cx},${top} L${cx + w / 2},${top + h} L${cx - w / 2},${top + h} Z`, fill, stroke: sel ? C.accent : mc || C.ink, "stroke-width": sel ? 2.6 : mk ? msw : 1.4, "stroke-linejoin": "round" }, g);
       svgText(g, cx, top + h - 9, trunc(n.ref, 7), { "text-anchor": "middle", "font-size": 11, "font-weight": 700, class: "mono", fill: txt });
       svgText(g, cx, top + h + 15, t("tree.clone"), { "text-anchor": "middle", "font-size": 11, fill: C.muted });
       if (p != null) svgText(g, cx, top + h + 29, `${pLabel} = ${fmtP(p, 3)}`, { "text-anchor": "middle", "font-size": 11, class: "mono", fill: "#4A4A46" });
+      if (mk) markBadge(g, cx + w / 2 + 2, top + 10, mk, mc, style);
     } else {
       const e = doc.events[n.id] || { name: n.id, prob: NaN, kind: "basic" };
       const cx = it.x, cy = it.y + 26, r = 24;
-      const shared = sharedColor.get(n.id);
       const state = forced[n.id];
       const hot = hl && hl.has(n.id);
       svgEl("rect", { class: "focusRing", x: cx - 56, y: it.y - 3, width: 112, height: 98, rx: 6, fill: "none", stroke: "none" }, g);
       if (hot) svgEl("circle", { cx, cy, r: r + 7, fill: "none", stroke: C.s2, "stroke-width": 4 }, g);
-      let f = fill, stroke = sel ? C.accent : shared || C.ink, sw = sel ? 2.6 : shared ? 2.2 : 1.4, tc = txt;
+      if (mk) twinRing("circle", { cx, cy, r: r + 6 }, mc, g);
+      let f = fill, stroke = sel ? C.accent : mc || C.ink, sw = sel ? 2.6 : mk ? msw : 1.4, tc = txt;
       if (state === "failed") { f = C.s3; stroke = C.wine; tc = "#FFFFFF"; sw = 2.4; }
       if (state === "working") { f = C.s1; stroke = C.accent; tc = "#FFFFFF"; sw = 2.4; }
       if (e.kind === "undeveloped") svgEl("path", { d: `M${cx},${cy - r - 3} L${cx + r + 5},${cy} L${cx},${cy + r + 3} L${cx - r - 5},${cy} Z`, fill: f, stroke, "stroke-width": sw }, g);
@@ -124,7 +162,8 @@ export function renderTree(svg, doc, opts = {}) {
       nl.forEach((ln, i) => svgText(g, cx, cy + r + 14 + i * 13, ln, { "text-anchor": "middle", "font-size": 11 }));
       let below;
       if (state) below = state === "failed" ? t("whatif.failed") : t("whatif.working");
-      else if (mode === "edit") below = e.samples ? `${fmtP(e.prob, 3)} (n=${e.samples.length})` : fmtP(e.prob, 3);
+      else if (mode === "edit") below = e.samples ? `${fmtP(e.prob, 3)} (n=${e.samples.length})`
+        : e.model ? `${fmtP(e.prob, 3)} · ${t("model.short." + e.model.dist)}` : fmtP(e.prob, 3);
       else below = p != null ? fmtP(p, 3) : fmtP(e.prob, 3);
       svgText(g, cx, cy + r + 15 + nl.length * 13, below, { "text-anchor": "middle", "font-size": 11, class: state ? "" : "mono",
         "font-weight": state ? 700 : 400, fill: state === "failed" ? C.wine : state === "working" ? C.accent : "#4A4A46" });
@@ -134,11 +173,7 @@ export function renderTree(svg, doc, opts = {}) {
         svgEl("path", { d: `M${bx - 5.5},${by + 3} C${bx - 3},${by + 3} ${bx - 2.2},${by - 4.5} ${bx},${by - 4.5} C${bx + 2.2},${by - 4.5} ${bx + 3},${by + 3} ${bx + 5.5},${by + 3}`,
           fill: "none", stroke: "#FFFFFF", "stroke-width": 1.6, "stroke-linecap": "round" }, g);
       }
-      if (shared) {
-        const bx = cx + r - 4, byy = cy - r + 2;
-        svgEl("rect", { x: bx - 2, y: byy - 10, width: 28, height: 17, rx: 8.5, fill: shared }, g);
-        svgText(g, bx + 12, byy + 3, "×" + occ.get(n.id), { "text-anchor": "middle", "font-size": 11.5, "font-weight": 700, fill: "#FFFFFF" });
-      }
+      if (mk) markBadge(g, cx + r + 3, cy - r + 3, mk, mc, style);
     }
     if (opts.tip) bindTip(g, () => opts.tip(n));
     if (opts.onNode) {

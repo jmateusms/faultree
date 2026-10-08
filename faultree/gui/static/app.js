@@ -2,10 +2,11 @@
 // results dashboard. Plain ES modules, no build step, nothing from the network.
 import { t, lang, setLang, locale, applyI18n, initLang } from "./i18n.js";
 import { $, el, C, api, fmtP, fmtSci, fmtNum, fmtPct, fmtInt, fmtMs, parseNum, numText, isNum, esc, trunc,
-  probScale, downloadJson, exportButtons, bindTip, hideTip, svgEl } from "./util.js";
+  probScale, downloadJson, exportButtons, bindTip, hideTip, svgEl, sharedColor } from "./util.js";
 import * as M from "./model.js";
 import { renderTree, layout, legend, gateDesc } from "./treeview.js";
 import * as Ch from "./charts.js";
+import { SET, loadSettings, setSetting, resetSettings } from "./settings.js";
 
 // ------------------------------------------------------------- state ---
 const S = {
@@ -63,6 +64,7 @@ function redo() { if (!S.hist.future.length) return; S.hist.past.push(snapshot()
 // ---------------------------------------------------- change pipeline ---
 function changed(opts = {}) {
   M.gcEvents(doc());
+  M.refreshModels(doc(), S.success);
   S.version++;
   S.issues = M.validate(doc());
   for (const id of Object.keys(S.whatif.forced)) if (!doc().events[id]) delete S.whatif.forced[id];
@@ -194,15 +196,37 @@ function renderEditor() {
   box.scrollLeft = sl; box.scrollTop = st;
 }
 function editTip(n) {
-  if (n.t === "ref") return [t("tree.cloneOf", { id: n.ref }), nameOf(n.ref)];
+  if (n.t === "ref") return [t("tree.cloneOf", { id: n.ref }), nameOf(n.ref), sharedLine(n.ref)];
   if (n.t === "gate") {
     const p = pFresh() ? S.point.probabilities[n.id] : null;
-    return [`${n.id} — ${M.dispName(n)}`, gateDesc(n.gate), p != null ? [S.success ? "R" : "P", fmtP(p, 6)] : null];
+    return [`${n.id} — ${M.dispName(n)}`, gateDesc(n.gate), p != null ? [S.success ? "R" : "P", fmtP(p, 6)] : null, sharedLine(n.id)];
   }
   const e = doc().events[n.id];
-  const occ = M.occurrences(doc()).get(n.id) || 1;
   return [`${n.id} — ${M.dispName(e)}`, [S.success ? t("probs.r") : "p", fmtP(e.prob, 6)],
-    e.dist ? [t("probs.dist"), distText(e.dist)] : null, occ > 1 ? t("tree.sharedN", { n: occ }) : null];
+    e.model ? [t("model.label"), modelText(e.model)] : null,
+    e.dist ? [t("probs.dist"), distText(e.dist)] : null, sharedLine(n.id)];
+}
+// "Shared event (A): appears 2 times", for tooltips.
+function sharedLine(key) {
+  const mk = M.sharedMarks(doc()).get(key);
+  if (!mk) return null;
+  return t(mk.gate ? "tree.clonedN" : "tree.sharedN", { n: mk.count }) + (SET.shared === "letter" ? ` — ${mk.letter}` : "");
+}
+// The marker of a shared item as a small chip (same letter/colour as the tree).
+function markChip(mk, parent = null) {
+  const label = SET.shared === "count" ? "×" + mk.count : SET.shared === "letter" ? mk.letter : "";
+  return el("span", { class: "mk" + (label ? "" : " dot"), style: `background:${sharedColor(mk)}`,
+    title: t(mk.gate ? "tree.clonedN" : "tree.sharedN", { n: mk.count }) }, parent, label);
+}
+const unitText = (u = M.timeUnit(doc())) => t("unit." + u);
+const paramLabel = (k) => t("mp." + k) + (k === "lambda" ? ` (/${unitText()})` : M.TIME_PARAMS.has(k) ? ` (${unitText()})` : "");
+function modelText(m) {
+  if (!m) return "—";
+  return `${t("model." + m.dist)} (${M.MODELS[m.dist].map((k) => `${t("mp." + k)} ${fmtNum(m[k], 4)}`).join(", ")})`;
+}
+// "p = 0.0952 at t = 1000 h" for an event with a failure model.
+function modelAt(e) {
+  return t("model.at", { q: S.success ? "R" : "p", p: e.prob == null ? "—" : fmtP(e.prob, 4), t: fmtNum(M.missionTime(doc()), 6), u: unitText() });
 }
 function distText(d) {
   if (!d) return "—";
@@ -261,18 +285,88 @@ function renderSide() {
     const e = doc().events[n.id];
     const occ = M.occurrences(doc()).get(n.id) || 1;
     const others = Object.keys(doc().events).filter((id) => id !== n.id);
-    box.innerHTML = `<h3>${esc(e.kind === "undeveloped" ? t("side.undeveloped") : t("side.basic"))} ${occ > 1 ? `<span class="tag">${esc(t("side.sharedTag", { n: occ }))}</span>` : ""}</h3>
+    box.innerHTML = `<h3>${esc(e.kind === "undeveloped" ? t("side.undeveloped") : t("side.basic"))}</h3>
       <div class="row2"><label class="field"><span>Id</span><input type="text" id="fId" value="${esc(n.id)}" spellcheck="false"></label>
       <label class="field"><span>${esc(t("side.name"))}</span><input type="text" id="fName" value="${esc(M.dispName(e))}" style="font-family:var(--sans)"></label></div>
       <p class="hint" style="margin-top:-4px">${esc(t("side.idHelp"))}</p>
-      <div class="row2"><label class="field"><span>${esc(S.success ? t("probs.r") : t("probs.p"))}</span><input type="text" id="fProb" inputmode="decimal" value="${esc(numText(e.prob))}" spellcheck="false"${e.samples ? " disabled" : ""}></label>
+      <div class="row2"><label class="field"><span>${esc(t("model.label"))}</span><select id="fModelSel"></select></label>
       <label class="field"><span>${esc(t("side.kind"))}</span><select id="fKind"><option value="basic"${e.kind === "basic" ? " selected" : ""}>${esc(t("side.kindBasic"))}</option><option value="undeveloped"${e.kind === "undeveloped" ? " selected" : ""}>${esc(t("side.kindUndev"))}</option></select></label></div>
+      <div id="fModel"></div>
       <p class="hint">${esc(t("probs.dist"))}: ${esc(e.dist ? distText(e.dist) : e.samples ? t("probs.samples", { n: e.samples.length }) : "—")} · <a href="#" data-side="toProbs">${esc(t("side.editProbs"))}</a></p>
       ${others.length ? `<div class="btnrow"><select id="fExisting" aria-label="${esc(t("side.useOther"))}" style="flex:1;min-width:0">${others.map((id) => opt(id, M.dispName(doc().events[id]))).join("")}</select><button type="button" class="btn ghost sm" data-side="useExisting">${esc(t("side.useThis"))}</button></div>` : ""}
       <div class="btnrow">${move}${occ > 1 ? `<button type="button" class="btn ghost sm" data-side="detach">${esc(t("side.detach"))}</button>` : ""}<button type="button" class="btn ghost sm" data-side="wrap">${esc(t("side.wrap"))}</button>${remove}</div>
       <p class="msg err" id="fMsg"></p>`;
   }
+  const mk = n.t !== "ref" ? M.sharedMarks(doc()).get(n.id) : null;
+  if (mk) {
+    const h = box.querySelector("h3");
+    h.append(" ");
+    markChip(mk, h);
+    el("span", { class: "hint mkhint" }, h, t(mk.gate ? "side.clonedTag" : "side.sharedTag", { n: mk.count }));
+  }
+  if (n.t === "leaf") fillSideModel(n);
   bindSide(n, f);
+}
+// The probability of the selected event: a fixed value or a failure model.
+function fillSideModel(n) {
+  const e = doc().events[n.id];
+  const host = $("fModel");
+  const sel = modelSelect(e, n.id);
+  sel.id = "fModelSel";
+  sel.disabled = !!e.samples;
+  $("fModelSel").replaceWith(sel);
+  if (!e.model) {
+    const pl = el("label", { class: "field" }, el("div", { class: "row2" }, host));
+    el("span", {}, pl, S.success ? t("probs.r") : t("probs.p"));
+    const pin = el("input", { type: "text", id: "fProb", inputmode: "decimal", value: numText(e.prob), spellcheck: "false", disabled: !!e.samples }, pl);
+    pin.addEventListener("input", () => {
+      const p = parseNum(pin.value);
+      if (!(p >= 0 && p <= 1)) { sideMsg(t("side.badProb")); return; }
+      sideMsg("");
+      pushHist("p" + n.id); e.prob = p; changed({ side: false });
+    });
+    return;
+  }
+  const out = el("p", { class: "mono", style: "margin:0 0 6px" }, null, modelAt(e));
+  host.appendChild(modelParams(e, n.id, () => { out.textContent = modelAt(e); }, { side: false }));
+  host.appendChild(out);
+}
+// Fixed value or failure model of event `e` (changing it re-renders).
+function modelSelect(e, id) {
+  const sel = el("select", { "aria-label": t("model.label") + " " + id });
+  el("option", { value: "", selected: !e.model }, sel, t("model.fixed"));
+  for (const [group, list] of [[t("model.lifetime"), M.LIFETIME], [t("model.counts"), M.COUNTS]]) {
+    const og = el("optgroup", { label: group }, sel);
+    for (const d of list) el("option", { value: d, selected: !!e.model && e.model.dist === d }, og, t("model." + d));
+  }
+  sel.addEventListener("change", () => {
+    pushHist();
+    // A new model starts near the current failure probability; going back
+    // to a fixed value keeps the last computed one.
+    if (sel.value) { e.model = M.defaultModel(sel.value, S.success ? 1 - e.prob : e.prob, M.missionTime(doc())); e.samples = null; }
+    else e.model = null;
+    changed();
+  });
+  return sel;
+}
+// Parameter inputs of a failure model; `after` runs once prob is updated.
+function modelParams(e, id, after, changeOpts) {
+  const box = el("div", { class: "params" });
+  for (const k of M.MODELS[e.model.dist]) {
+    const lab = el("label", {}, box, paramLabel(k));
+    const inp = el("input", { type: "text", value: numText(e.model[k]), inputmode: "decimal", spellcheck: "false", "aria-label": `${paramLabel(k)} ${id}` }, lab);
+    inp.addEventListener("input", () => {
+      const v = parseNum(inp.value);
+      if (!isNum(v)) { inp.classList.add("bad"); return; }
+      pushHist("m" + id + k);
+      e.model = { ...e.model, [k]: v };
+      const ok = M.validModel(e.model);
+      box.querySelectorAll("input").forEach((x) => x.classList.toggle("bad", !ok));
+      changed(changeOpts);
+      after();
+    });
+  }
+  return box;
 }
 function bindSide(n, f) {
   const box = $("sideEdit");
@@ -314,12 +408,6 @@ function bindSide(n, f) {
     $("fGate").addEventListener("change", (ev) => { pushHist(); n.gate = ev.target.value; if (n.gate === "K_OF_N") n.k = Math.min(Math.max(1, n.k || 2), Math.max(1, n.children.length)); changed(); });
     $("fK").addEventListener("input", (ev) => { const k = Number(ev.target.value); if (!Number.isInteger(k)) return; pushHist("k" + n.uid); n.k = k; changed({ side: false }); });
   } else {
-    $("fProb").addEventListener("input", (ev) => {
-      const p = parseNum(ev.target.value);
-      if (!(p >= 0 && p <= 1)) { sideMsg(t("side.badProb")); return; }
-      sideMsg("");
-      pushHist("p" + n.id); doc().events[n.id].prob = p; changed({ side: false });
-    });
     $("fKind").addEventListener("change", (ev) => { pushHist(); doc().events[n.id].kind = ev.target.value; changed(); });
   }
 }
@@ -356,7 +444,8 @@ const DEFAULT_DIST = {
 };
 function renderEvents() {
   const table = $("eventsTable");
-  const occ = M.occurrences(doc());
+  const marks = M.sharedMarks(doc());
+  fillTimeBar();
   const head = `<thead><tr><th>${esc(t("probs.event"))}</th><th>${esc(S.success ? t("probs.r") : t("probs.p"))}</th><th>${esc(t("probs.dist"))}</th><th>${esc(t("probs.params"))}</th><th class="num">${esc(t("probs.mean"))}</th></tr></thead>`;
   table.innerHTML = head + "<tbody></tbody>";
   const tb = table.tBodies[0];
@@ -365,16 +454,24 @@ function renderEvents() {
     const tr = el("tr", {}, tb);
     const td0 = el("td", {}, tr);
     el("b", { class: "mono" }, td0, id);
-    if (occ.get(id) > 1) el("span", { class: "tag", style: "margin-left:6px" }, td0, "×" + occ.get(id));
+    if (marks.has(id)) markChip(marks.get(id), td0).style.marginLeft = "6px";
     if (M.dispName(e) !== id) el("span", { class: "name", title: M.dispName(e) }, td0, M.dispName(e));
-    const td1 = el("td", {}, tr);
-    const pin = el("input", { type: "text", value: e.samples ? fmtP(e.prob, 4) : numText(e.prob), inputmode: "decimal", spellcheck: "false", "aria-label": `p ${id}`, disabled: !!e.samples }, td1);
-    pin.addEventListener("input", () => {
-      const p = parseNum(pin.value);
-      pin.classList.toggle("bad", !(p >= 0 && p <= 1));
-      if (!(p >= 0 && p <= 1)) return;
-      pushHist("p" + id); e.prob = p; changed({ events: false });
-    });
+    const td1 = el("td", { class: "pcell" }, tr);
+    if (!e.samples) td1.appendChild(modelSelect(e, id));
+    if (e.model) {
+      const out = el("span", { class: "mono pout", title: modelAt(e) }, null, "= " + fmtP(e.prob, 4));
+      const box = modelParams(e, id, () => { out.textContent = "= " + fmtP(e.prob, 4); out.title = modelAt(e); }, { events: false });
+      box.appendChild(out);
+      td1.appendChild(box);
+    } else {
+      const pin = el("input", { type: "text", value: e.samples ? fmtP(e.prob, 4) : numText(e.prob), inputmode: "decimal", spellcheck: "false", "aria-label": `p ${id}`, disabled: !!e.samples }, td1);
+      pin.addEventListener("input", () => {
+        const p = parseNum(pin.value);
+        pin.classList.toggle("bad", !(p >= 0 && p <= 1));
+        if (!(p >= 0 && p <= 1)) return;
+        pushHist("p" + id); e.prob = p; changed({ events: false });
+      });
+    }
     const td2 = el("td", {}, tr);
     if (e.samples) {
       el("span", { class: "hint" }, td2, t("probs.samples", { n: e.samples.length }) + " ");
@@ -406,6 +503,15 @@ function renderEvents() {
       }
     }
   }
+}
+// Mission time and time unit of the failure models (saved with the model).
+function fillTimeBar() {
+  const tin = $("missionTime"), us = $("timeUnit");
+  if (document.activeElement !== tin) tin.value = numText(M.missionTime(doc()));
+  tin.classList.remove("bad");
+  us.replaceChildren();
+  for (const u of M.TIME_UNITS) el("option", { value: u, selected: u === M.timeUnit(doc()) }, us, unitText(u));
+  $("timeNote").textContent = M.hasModels(doc()) ? "" : t("probs.timeIdle");
 }
 async function importProbFile(file) {
   const msg = $("probMsg");
@@ -506,12 +612,13 @@ function card(host, title, exportName) {
 function resultTip(n, probs, extra = {}) {
   const P = S.point;
   const pl = S.success ? "R" : "P";
-  if (n.t === "ref") return [t("tree.cloneOf", { id: n.ref }), nameOf(n.ref), [pl, fmtP(probs[n.ref], 6)]];
+  if (n.t === "ref") return [t("tree.cloneOf", { id: n.ref }), nameOf(n.ref), [pl, fmtP(probs[n.ref], 6)], sharedLine(n.ref)];
   if (n.t === "gate") {
     const lines = [`${n.id} — ${M.dispName(n)}`, gateDesc(n.gate), [pl, fmtP(probs[n.id], 6)]];
     if (extra.base) lines.push([t("whatif.baseShort"), fmtP(extra.base[n.id], 6)]);
     const U = S.unc.res;
     if (!extra.base && U && S.unc.ver === S.version && U.probabilities[n.id]) lines.push(["p5 – p95", `${fmtP(U.probabilities[n.id].p05, 3)} – ${fmtP(U.probabilities[n.id].p95, 3)}`]);
+    lines.push(sharedLine(n.id));
     return lines;
   }
   const e = doc().events[n.id];
@@ -521,6 +628,8 @@ function resultTip(n, probs, extra = {}) {
     const I = P.importance[n.id];
     lines.push([t("imp.birnbaum"), fmtNum(I.birnbaum, 4)], [t("imp.criticality"), fmtPct(I.criticality)], ["RAW", fmtNum(I.raw, 4)], ["RRW", fmtNum(I.rrw, 4)]);
   } else if (P && P.birnbaum && P.birnbaum[n.id] != null && !extra.forced) lines.push([t("imp.birnbaum"), fmtNum(P.birnbaum[n.id], 4)]);
+  if (e.model && !extra.forced) lines.push(modelAt(e));
+  lines.push(sharedLine(n.id));
   if (extra.hint) lines.push(extra.hint);
   return lines;
 }
@@ -847,6 +956,7 @@ async function loadExamples() {
 }
 function fillExamples() {
   const sel = $("exampleSel");
+  const cur = sel.value;
   sel.replaceChildren();
   el("option", { value: "" }, sel, t("file.examplesPick"));
   const list = [...S.examples].sort((a, b) => (a.file === "pressure_tank.json" ? -1 : b.file === "pressure_tank.json" ? 1 : a.file.localeCompare(b.file)));
@@ -855,6 +965,7 @@ function fillExamples() {
     const label = `${x.file.replace(/\.json$/, "")} — ${trunc(title, 34)} (${x.basic_events} ${t("file.events")}${x.success_mode ? ", " + t("file.successTag") : ""})`;
     el("option", { value: x.file }, sel, label);
   }
+  sel.value = cur;
 }
 async function loadExample(file) {
   try {
@@ -888,7 +999,9 @@ function setMode(mode, rerun = true) {
   if (!rerun) return;
   S.unc.res = null; S.whatif.res = null;
   S.point = null;
+  M.refreshModels(doc(), S.success); // failure models give R = 1 − F(t) in success mode
   S.version++;
+  renderEditor();
   renderSide();
   if (S.ui.ltab === "probs") renderEvents();
   scheduleAnalysis();
@@ -905,6 +1018,30 @@ function renderAll() {
   renderIssues();
   renderResults();
 }
+// ---------------------------------------------------------- settings ---
+// A tiny tree with two shared events, drawn in each marker style.
+function previewDoc() {
+  const ev = { name: "", prob: 0.01, kind: "basic", dist: null, samples: null };
+  const d = { root: M.gateNode("TOP", "", "OR", []), events: { E1: { ...ev }, E2: { ...ev } }, meta: {} };
+  d.root.children = [M.leafNode("E1"), M.leafNode("E2"), M.leafNode("E1"), M.leafNode("E2")];
+  return d;
+}
+function syncSettings() {
+  const dlg = $("settingsDlg");
+  dlg.querySelectorAll("input[type=radio]").forEach((r) => { r.checked = SET[r.name] === r.value; });
+  $("setTwins").checked = SET.twins;
+  const d = previewDoc();
+  dlg.querySelectorAll("[data-preview]").forEach((host) => {
+    host.replaceChildren();
+    const svg = svgEl("svg", { "aria-hidden": "true" }, host);
+    const L = renderTree(svg, d, { mode: "preview", sharedStyle: host.dataset.preview });
+    const z = 0.8, top = 114, h = 66; // only the row of basic events
+    svg.setAttribute("viewBox", `0 ${top} ${L.width} ${h}`);
+    svg.setAttribute("width", Math.round(L.width * z));
+    svg.setAttribute("height", Math.round(h * z));
+  });
+}
+function applySetting(k, v) { setSetting(k, v); renderAll(); syncSettings(); }
 function zoomAction(spec) {
   const [which, op] = spec.split(":");
   const key = which === "edit" ? "zoomEdit" : "zoomRes";
@@ -958,6 +1095,20 @@ function wire() {
     changed();
   });
   $("btnNoDist").addEventListener("click", () => { pushHist(); for (const e of Object.values(doc().events)) e.dist = null; changed(); });
+  $("missionTime").addEventListener("input", (ev) => {
+    const v = parseNum(ev.target.value);
+    ev.target.classList.toggle("bad", !M.validTime(v));
+    if (!M.validTime(v)) return;
+    pushHist("time"); doc().meta.mission_time = v; changed();
+  });
+  $("timeUnit").addEventListener("change", (ev) => { pushHist(); doc().meta.time_unit = ev.target.value; changed(); });
+  $("btnSettings").addEventListener("click", () => { syncSettings(); $("settingsDlg").showModal(); });
+  $("settingsDlg").addEventListener("change", (ev) => {
+    const x = ev.target;
+    if (x.type === "radio") applySetting(x.name, x.value);
+    else if (x.id === "setTwins") applySetting("twins", x.checked);
+  });
+  $("setReset").addEventListener("click", () => { resetSettings(); renderAll(); syncSettings(); });
   $("jsonApply").addEventListener("click", async () => {
     const msg = $("jsonMsg");
     try {
@@ -996,6 +1147,7 @@ function wire() {
 }
 
 async function start() {
+  loadSettings();
   initLang();
   applyI18n(document);
   document.querySelectorAll("[data-lang]").forEach((b) => b.classList.toggle("on", b.dataset.lang === lang()));
