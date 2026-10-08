@@ -1,5 +1,7 @@
 # Faultree
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23244049.svg)](https://doi.org/10.5281/zenodo.23244049)
+
 A Python tool for Fault Tree Analysis (FTA) using Ordered Binary Decision Diagrams (OBDD).
 
 ## Overview
@@ -290,7 +292,7 @@ Limits apply to enumeration, not a hard wall-clock or BDD-memory budget.
 
 ## Citing
 
-If you use faultree in academic work, please cite it: GitHub's **Cite this repository** button (from [CITATION.cff](https://github.com/jmateusms/faultree/blob/main/CITATION.cff)) gives APA and BibTeX.
+If you use faultree in academic work, please cite it: GitHub's **Cite this repository** button (from [CITATION.cff](https://github.com/jmateusms/faultree/blob/main/CITATION.cff)) gives APA and BibTeX. Releases are archived on Zenodo: [doi:10.5281/zenodo.23244049](https://doi.org/10.5281/zenodo.23244049) cites the software across versions, and each release has its own DOI on that page.
 
 ## License
 
