@@ -114,13 +114,20 @@ th.num, td.num { text-align: right; }
 td { border-bottom: 1px solid var(--rule); padding: 4px 8px; vertical-align: middle; }
 td.mono, .mono { font-family: var(--mono); }
 tr.hl td { background: var(--accent-light); }
+table.events td { padding: 4px 6px; }
 table.events td input[type=text] { width: 86px; padding: 3px 5px; }
 table.events td select { padding: 3px 4px; }
-table.events .name { color: var(--muted); font-size: 12px; display: block; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-table.events .params { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
-table.events .params label { font-size: 11px; color: var(--muted); display: flex; flex-direction: column; }
+table.events .name { color: var(--muted); font-size: 12px; display: block; max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.params { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.params label { font-size: 11px; color: var(--muted); display: flex; flex-direction: column; }
 table.events .params input { width: 64px !important; }
+.side .params { gap: 8px; margin: 0 0 6px; }
+.side .params label { font-size: 12px; font-weight: 600; }
+.side .params input { width: 96px; }
 table.events .bad { border-color: var(--wine); background: #6D2E460D; }
+table.events td.pcell select { margin: 0 4px 3px 0; max-width: 150px; }
+table.events td.pcell .params input { width: 58px !important; }
+table.events .pout { font-size: 12.5px; align-self: flex-end; padding-bottom: 4px; white-space: nowrap; }
 .sharebar { display: inline-block; height: 9px; background: var(--s1); border-radius: 2px; vertical-align: middle; margin-right: 6px; }
 
 /* ----------------------------------------------------------- results --- */
@@ -150,6 +157,28 @@ table.events .bad { border-color: var(--wine); background: #6D2E460D; }
 .pill.failed { background: var(--s3); } .pill.working { background: var(--s1); }
 .pill button { border: 0; background: none; color: #fff; cursor: pointer; padding: 0 0 0 2px; font-weight: 700; }
 .legendbox { display: inline-flex; align-items: center; }
+
+/* -------------------------------------------- shared-event markers --- */
+.mk { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; color: #fff; font-size: 11.5px; font-weight: 700; vertical-align: middle; line-height: 1; }
+.mk.dot { min-width: 0; width: 12px; height: 12px; padding: 0; }
+.mkhint { font-weight: 400; font-size: 12px; margin: 0 0 0 6px; }
+svg .nd.twin .twinRing, svg .nd.twinSel .twinRing { visibility: visible; }
+
+/* ---------------------------------------------------------- settings --- */
+.gear { font-size: 15px; width: 30px; }
+.dlg { border: 1px solid var(--rule); border-radius: 10px; padding: 16px 20px 12px; width: min(600px, calc(100vw - 32px)); background: var(--card); color: var(--ink); box-shadow: 0 10px 40px #0003; }
+.dlg::backdrop { background: #2B2B2B55; }
+.dlg h2 { margin: 0 0 10px; font-size: 17px; }
+.dlg fieldset { border: 1px solid var(--rule); border-radius: 8px; margin: 0 0 12px; padding: 6px 12px 10px; }
+.dlg legend { font-weight: 700; font-size: 13.5px; padding: 0 4px; }
+.dlg .hint { margin: 2px 0 8px; }
+.dlg label.inline { font-weight: 500; margin-right: 16px; }
+.dlg .btnrow .grow { flex: 1; }
+.choices { display: flex; flex-direction: column; gap: 6px; margin: 0 0 10px; }
+.choice { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; border: 1px solid var(--rule); border-radius: 8px; padding: 5px 10px; cursor: pointer; font-size: 13px; }
+.choice:has(input:checked) { border-color: var(--accent); background: var(--accent-light); }
+.choice input { accent-color: var(--accent); margin: 0; }
+.choice .pv svg { display: block; }
 
 /* ----------------------------------------------------------- tooltip --- */
 .tip { position: fixed; z-index: 50; pointer-events: none; background: var(--ink); color: #fff; border-radius: 6px; padding: 6px 9px; font-size: 12px; max-width: 360px; box-shadow: 0 3px 12px #0003; }

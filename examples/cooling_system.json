@@ -1,0 +1,180 @@
+{
+  "id": "TOP",
+  "name": "No cooling water",
+  "name_pt": "Falta de água de resfriamento",
+  "note": "A two-train cooling system with failure models: the event probabilities are F(t) at the mission time (2000 h). Pumps wear out (Weibull), valves fail on demand (binomial, 12 demands), the shared power supply fails at a constant rate (exponential), the level sensors vote 2-out-of-3 (gamma) and the pipe fails after two or more water hammers (Poisson). The parameters are illustrative.",
+  "note_pt": "Um sistema de resfriamento de dois trens com modelos de falha: as probabilidades dos eventos são F(t) no tempo de missão (2000 h). As bombas se desgastam (Weibull), as válvulas falham sob demanda (binomial, 12 demandas), a alimentação elétrica compartilhada falha a taxa constante (exponencial), os sensores de nível votam 2 de 3 (gama) e a tubulação falha após dois ou mais golpes de aríete (Poisson). Os parâmetros são ilustrativos.",
+  "mission_time": 2000,
+  "time_unit": "h",
+  "event_type": "top",
+  "gate": "OR",
+  "children": [
+    {
+      "id": "TRAINS",
+      "name": "Both pump trains fail",
+      "name_pt": "Os dois trens de bombeamento falham",
+      "event_type": "intermediate",
+      "gate": "AND",
+      "children": [
+        {
+          "id": "T1",
+          "name": "Train 1 fails",
+          "name_pt": "Trem 1 falha",
+          "event_type": "intermediate",
+          "gate": "OR",
+          "children": [
+            {
+              "id": "P1",
+              "name": "Pump 1 fails to run",
+              "name_pt": "Bomba 1 falha em operação",
+              "event_type": "basic",
+              "gate": null,
+              "prob": 0.0389695080722,
+              "failure_model": {
+                "dist": "weibull",
+                "beta": 1.8,
+                "eta": 12000
+              },
+              "children": []
+            },
+            {
+              "id": "V1",
+              "name": "Valve 1 fails to open",
+              "name_pt": "Válvula 1 não abre",
+              "event_type": "basic",
+              "gate": null,
+              "prob": 0.0237377521053,
+              "failure_model": {
+                "dist": "binomial",
+                "q": 0.002,
+                "n": 12,
+                "k": 1
+              },
+              "children": []
+            },
+            {
+              "id": "PWR",
+              "name": "Power supply lost",
+              "name_pt": "Perda da alimentação elétrica",
+              "event_type": "basic",
+              "gate": null,
+              "prob": 0.0392105608477,
+              "failure_model": {
+                "dist": "exponential",
+                "lambda": 0.00002
+              },
+              "children": []
+            }
+          ]
+        },
+        {
+          "id": "T2",
+          "name": "Train 2 fails",
+          "name_pt": "Trem 2 falha",
+          "event_type": "intermediate",
+          "gate": "OR",
+          "children": [
+            {
+              "id": "P2",
+              "name": "Pump 2 fails to run",
+              "name_pt": "Bomba 2 falha em operação",
+              "event_type": "basic",
+              "gate": null,
+              "prob": 0.0389695080722,
+              "failure_model": {
+                "dist": "weibull",
+                "beta": 1.8,
+                "eta": 12000
+              },
+              "children": []
+            },
+            {
+              "id": "V2",
+              "name": "Valve 2 fails to open",
+              "name_pt": "Válvula 2 não abre",
+              "event_type": "basic",
+              "gate": null,
+              "prob": 0.0237377521053,
+              "failure_model": {
+                "dist": "binomial",
+                "q": 0.002,
+                "n": 12,
+                "k": 1
+              },
+              "children": []
+            },
+            {
+              "ref": "PWR"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "LEVEL",
+      "name": "Level signal lost (2 of 3 sensors)",
+      "name_pt": "Perda do sinal de nível (2 de 3 sensores)",
+      "event_type": "intermediate",
+      "gate": "K_OF_N",
+      "k": 2,
+      "children": [
+        {
+          "id": "S1",
+          "name": "Level sensor 1 fails",
+          "name_pt": "Sensor de nível 1 falha",
+          "event_type": "basic",
+          "gate": null,
+          "prob": 0.00813690508466,
+          "failure_model": {
+            "dist": "gamma",
+            "alpha": 2,
+            "theta": 15000
+          },
+          "children": []
+        },
+        {
+          "id": "S2",
+          "name": "Level sensor 2 fails",
+          "name_pt": "Sensor de nível 2 falha",
+          "event_type": "basic",
+          "gate": null,
+          "prob": 0.00813690508466,
+          "failure_model": {
+            "dist": "gamma",
+            "alpha": 2,
+            "theta": 15000
+          },
+          "children": []
+        },
+        {
+          "id": "S3",
+          "name": "Level sensor 3 fails",
+          "name_pt": "Sensor de nível 3 falha",
+          "event_type": "basic",
+          "gate": null,
+          "prob": 0.00813690508466,
+          "failure_model": {
+            "dist": "gamma",
+            "alpha": 2,
+            "theta": 15000
+          },
+          "children": []
+        }
+      ]
+    },
+    {
+      "id": "PIPE",
+      "name": "Pipe rupture (2 or more water hammers)",
+      "name_pt": "Ruptura da tubulação (2 ou mais golpes de aríete)",
+      "event_type": "basic",
+      "gate": null,
+      "prob": 0.0175230963064,
+      "failure_model": {
+        "dist": "poisson",
+        "lambda": 0.0001,
+        "k": 2
+      },
+      "children": []
+    }
+  ]
+}

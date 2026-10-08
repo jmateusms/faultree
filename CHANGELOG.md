@@ -15,6 +15,18 @@
   (conditional Q), distribution of Q with percentiles, importance spread, the
   expressions and a BDD drawing. Results export as JSON and charts as SVG or
   PNG. Interface in Portuguese and English.
+- GUI failure models: an event's probability can come from a time-to-failure
+  distribution at a mission time t (exponential, Weibull, normal, lognormal,
+  gamma, uniform: p = F(t)) or from a count of failures (binomial over n
+  demands, Poisson over [0, t], reaching k), with the reliability 1 − F(t) in
+  success mode. Saved as `failure_model` with `mission_time`/`time_unit`, and
+  `prob` = F(t) so the engine and CLI read the file unchanged.
+  `examples/cooling_system.json` uses every kind.
+- GUI shared-event markers: every occurrence of a shared event, and a gate
+  with its clones, carries the same letter and colour (or the colour alone,
+  or ×n); hovering or selecting one highlights the others.
+- GUI settings (⚙): marker style, occurrence highlighting and scientific
+  notation, remembered in the browser.
 - `examples/pressure_tank.json`: the pressure tank of the NRC Fault Tree
   Handbook (NUREG-0492), with illustrative probabilities and uncertainty.
 - The examples are packaged as `faultree/examples` (for the GUI's examples
@@ -34,6 +46,7 @@
   explicit `complete`/`truncated` flag; `--cut-sets [MAX_ORDER]` in the CLI.
 
 ### Fixed
+- The GUI's examples menu keeps the loaded example when the language changes.
 - Probability CSV files separated by `;` (with decimal commas, as Excel
   writes them in pt-BR) or by tabs are read instead of failing with a
   misleading "more cells than header columns" error.

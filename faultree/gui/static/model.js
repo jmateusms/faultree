@@ -3,12 +3,14 @@
 // doc.root   gate {t:"gate", uid, id, name, name_pt?, gate, k, children}
 //            leaf {t:"leaf", uid, id}            (a basic event occurrence)
 //            ref  {t:"ref", uid, ref}            (a clone of a gate: faultree's {"ref": id})
-// doc.events id -> {name, name_pt?, prob, kind, dist, samples}
+// doc.events id -> {name, name_pt?, prob, kind, dist, samples, model?}
 //            one definition per basic event; repeated leaves share it.
 //            prob: point probability (number or null); dist: optional
 //            uncertainty {dist, ...params}; samples: optional sample vector
-//            from a file (prob is then its mean).
-// doc.meta   {note?, note_pt?} carried through load/save.
+//            from a file (prob is then its mean); model: optional failure
+//            model {dist, ...params} from which prob is computed at the
+//            mission time (see refreshModels).
+// doc.meta   {note?, note_pt?, mission_time?, time_unit?} carried through load/save.
 import { t, lang } from "./i18n.js";
 
 export const GATES = ["AND", "OR", "XOR", "K_OF_N"];
@@ -18,6 +20,25 @@ export const DISTS = {
   uniform: ["low", "high"],
   loguniform: ["low", "high"],
 };
+// Failure models: p = F(t), the probability that the event has occurred by
+// the mission time t, from a time-to-failure distribution, or from a count
+// of failures (binomial over n demands, Poisson over [0, t]) reaching k.
+// Rates are per time unit; eta, mu, sigma, tmed, theta, a, b are times.
+export const MODELS = {
+  exponential: ["lambda"],
+  weibull: ["beta", "eta"],
+  normal: ["mu", "sigma"],
+  lognormal: ["tmed", "s"],
+  gamma: ["alpha", "theta"],
+  uniform: ["a", "b"],
+  binomial: ["q", "n", "k"],
+  poisson: ["lambda", "k"],
+};
+export const LIFETIME = ["exponential", "weibull", "normal", "lognormal", "gamma", "uniform"];
+export const COUNTS = ["binomial", "poisson"];
+export const TIME_PARAMS = new Set(["eta", "mu", "sigma", "tmed", "theta", "a", "b"]);
+export const DEFAULT_T = 1000;
+export const TIME_UNITS = ["h", "d", "y", "min", "cycles"];
 let UID = 0;
 
 export function gateNode(id, name, gate, children = [], k = 2) { return { t: "gate", uid: ++UID, id, name, gate, k, children }; }
@@ -40,6 +61,25 @@ export function refCounts(doc) {
   const m = new Map();
   walk(doc.root, (n) => { if (n.t === "ref") m.set(n.ref, (m.get(n.ref) || 0) + 1); });
   return m;
+}
+// Shared items: basic events placed more than once and gates that have
+// clones. Each gets a letter (A, B, …, Z, AA, …) and a colour index in
+// order of first appearance, so every occurrence carries the same marker.
+export function letterOf(i) {
+  let s = "";
+  for (i += 1; i > 0; i = Math.floor((i - 1) / 26)) s = String.fromCharCode(65 + ((i - 1) % 26)) + s;
+  return s;
+}
+export function sharedMarks(doc) {
+  const occ = occurrences(doc), refs = refCounts(doc);
+  const out = new Map();
+  walk(doc.root, (n) => {
+    const key = n.t === "ref" ? n.ref : n.id;
+    if (out.has(key)) return;
+    const count = n.t === "leaf" ? occ.get(key) : (refs.get(key) || 0) + 1;
+    if (count > 1) out.set(key, { letter: letterOf(out.size), index: out.size, count, gate: n.t !== "leaf" });
+  });
+  return out;
 }
 export function eventIds(doc) { return [...occurrences(doc).keys()]; }
 export function findUid(doc, uid) { let r = null; walk(doc.root, (n, p, i) => { if (n.uid === uid) r = { n, p, i }; }); return r; }
@@ -104,6 +144,158 @@ export function distMean(d) {
   return d.low === d.high ? d.low : (d.high - d.low) / Math.log(d.high / d.low);
 }
 
+// ------------------------------------------------------ failure models ---
+// ln Γ(x), Lanczos (g = 7, 9 terms), relative error about 1e-15.
+const LANCZOS = [0.99999999999980993, 676.5203681218851, -1259.1392167224028, 771.32342877765313,
+  -176.61502916214059, 12.507343278686905, -0.13857109526572012, 9.9843695780195716e-6, 1.5056327351493116e-7];
+export function lnGamma(x) {
+  if (x < 0.5) return Math.log(Math.PI / Math.abs(Math.sin(Math.PI * x))) - lnGamma(1 - x);
+  x -= 1;
+  let a = LANCZOS[0];
+  const tt = x + 7.5;
+  for (let i = 1; i < 9; i++) a += LANCZOS[i] / (x + i);
+  return 0.5 * Math.log(2 * Math.PI) + (x + 0.5) * Math.log(tt) - tt + Math.log(a);
+}
+const EPS = 1e-15;
+// Regularized incomplete gamma: P(a, x) by its series (x < a + 1) and
+// Q(a, x) = 1 − P(a, x) by its continued fraction (modified Lentz), so the
+// smaller of the two is always computed directly, without cancellation.
+function gser(a, x) {
+  let ap = a, sum = 1 / a, del = sum;
+  for (let i = 0; i < 10000 && Math.abs(del) > Math.abs(sum) * EPS; i++) { ap += 1; del *= x / ap; sum += del; }
+  return sum * Math.exp(-x + a * Math.log(x) - lnGamma(a));
+}
+function gcf(a, x) {
+  const tiny = 1e-300;
+  let b = x + 1 - a, c = 1 / tiny, d = 1 / b, h = d;
+  for (let i = 1; i < 10000; i++) {
+    const an = -i * (i - a);
+    b += 2;
+    d = an * d + b; if (Math.abs(d) < tiny) d = tiny;
+    c = b + an / c; if (Math.abs(c) < tiny) c = tiny;
+    d = 1 / d;
+    const del = d * c;
+    h *= del;
+    if (Math.abs(del - 1) < EPS) break;
+  }
+  return Math.exp(-x + a * Math.log(x) - lnGamma(a)) * h;
+}
+export function gammaP(a, x) { return x <= 0 ? 0 : x === Infinity ? 1 : x < a + 1 ? gser(a, x) : 1 - gcf(a, x); }
+export function gammaQ(a, x) { return x <= 0 ? 1 : x === Infinity ? 0 : x < a + 1 ? 1 - gser(a, x) : gcf(a, x); }
+// Standard normal CDF; Φ(−|z|) = Q(1/2, z²/2) / 2 keeps the tails accurate.
+export function normCdf(z) {
+  if (Number.isNaN(z)) return NaN;
+  const tail = 0.5 * gammaQ(0.5, (z * z) / 2);
+  return z < 0 ? tail : 1 - tail;
+}
+export function normInv(p) {
+  if (!(p > 0 && p < 1)) return p === 0 ? -Infinity : p === 1 ? Infinity : NaN;
+  let lo = -40, hi = 40;
+  for (let i = 0; i < 200 && hi - lo > 1e-13; i++) { const m = (lo + hi) / 2; if (normCdf(m) < p) lo = m; else hi = m; }
+  return (lo + hi) / 2;
+}
+// ln C(n, k), summing logs when the smaller side is short (exact for large n).
+function lnChoose(n, k) {
+  const m = Math.min(k, n - k);
+  if (m <= 2000) { let s = 0; for (let j = 1; j <= m; j++) s += Math.log((n - m + j) / j); return s; }
+  return lnGamma(n + 1) - lnGamma(k + 1) - lnGamma(n - k + 1);
+}
+// [P(X ≥ k), P(X < k)] for X ~ Binomial(n, q). The tail away from the mode
+// is summed directly from its first term (recurrence on the term ratio),
+// and the other side is its complement.
+function binomTail(q, n, k) {
+  if (q === 0) return [0, 1];
+  if (q === 1) return [1, 0];
+  if (k === 1) { const l = n * Math.log1p(-q); return [-Math.expm1(l), Math.exp(l)]; }
+  const r = q / (1 - q), mode = Math.floor((n + 1) * q);
+  const term = (i) => Math.exp(lnChoose(n, i) + i * Math.log(q) + (n - i) * Math.log1p(-q));
+  if (k > mode) {
+    let s = 0;
+    for (let i = k, x = term(k); i <= n; i++) { s += x; x *= ((n - i) / (i + 1)) * r; if (x <= s * 1e-17) break; }
+    return [Math.min(1, s), Math.max(0, 1 - s)];
+  }
+  let s = 0;
+  for (let i = k - 1, x = term(k - 1); i >= 0; i--) { s += x; x *= (i / (n - i + 1)) / r; if (x <= s * 1e-17) break; }
+  return [Math.max(0, 1 - s), Math.min(1, s)];
+}
+
+const fin = (x) => typeof x === "number" && Number.isFinite(x);
+const isInt = (x) => Number.isInteger(x);
+export function validModel(m) {
+  if (!m || !MODELS[m.dist] || !MODELS[m.dist].every((k) => fin(m[k]))) return false;
+  switch (m.dist) {
+    case "exponential": return m.lambda >= 0;
+    case "weibull": return m.beta > 0 && m.eta > 0;
+    case "normal": return m.sigma > 0;
+    case "lognormal": return m.tmed > 0 && m.s > 0;
+    case "gamma": return m.alpha > 0 && m.theta > 0;
+    case "uniform": return m.a >= 0 && m.a < m.b;
+    case "binomial": return m.q >= 0 && m.q <= 1 && isInt(m.n) && m.n >= 1 && m.n <= 1e9 && isInt(m.k) && m.k >= 1 && m.k <= m.n;
+    case "poisson": return m.lambda >= 0 && isInt(m.k) && m.k >= 1;
+  }
+  return false;
+}
+export function validTime(x) { return fin(x) && x >= 0; }
+// [F(t), 1 − F(t)] of a failure model, each computed directly.
+export function modelPair(m, time) {
+  if (!validModel(m) || !validTime(time)) return [NaN, NaN];
+  switch (m.dist) {
+    case "exponential": { const x = m.lambda * time; return [-Math.expm1(-x), Math.exp(-x)]; }
+    case "weibull": { const x = Math.pow(time / m.eta, m.beta); return [-Math.expm1(-x), Math.exp(-x)]; }
+    case "normal": { const z = (time - m.mu) / m.sigma; return [normCdf(z), normCdf(-z)]; }
+    case "lognormal": {
+      if (time === 0) return [0, 1];
+      const z = Math.log(time / m.tmed) / m.s;
+      return [normCdf(z), normCdf(-z)];
+    }
+    case "gamma": { const x = time / m.theta; return [gammaP(m.alpha, x), gammaQ(m.alpha, x)]; }
+    case "uniform": { const f = Math.min(1, Math.max(0, (time - m.a) / (m.b - m.a))); return [f, 1 - f]; }
+    case "binomial": return binomTail(m.q, m.n, m.k);
+    case "poisson": { const x = m.lambda * time; return m.k === 1 ? [-Math.expm1(-x), Math.exp(-x)] : [gammaP(m.k, x), gammaQ(m.k, x)]; }
+  }
+  return [NaN, NaN];
+}
+// The event's input value: the failure probability F(t), or in success mode
+// the reliability 1 − F(t).
+export function modelProb(m, time, success = false) { return modelPair(m, time)[success ? 1 : 0]; }
+export function missionTime(doc) { const v = doc.meta && doc.meta.mission_time; return v == null ? DEFAULT_T : v; }
+export function timeUnit(doc) { return (doc.meta && doc.meta.time_unit) || "h"; }
+export function hasModels(doc) { return Object.values(doc.events).some((e) => e.model); }
+// Recompute prob for every event with a failure model.
+export function refreshModels(doc, success = false) {
+  const time = missionTime(doc);
+  for (const e of Object.values(doc.events)) {
+    if (!e.model) continue;
+    const p = modelProb(e.model, time, success);
+    e.prob = Number.isFinite(p) ? p : null;
+  }
+}
+// Parameters of a new model chosen so that F(t) is close to p (a failure
+// probability), rounded to 4 significant digits.
+export function defaultModel(dist, p, time) {
+  if (!(p > 0 && p < 1)) p = 0.01;
+  if (!(time > 0)) time = DEFAULT_T;
+  const r4 = (x) => +x.toPrecision(4);
+  const h = -Math.log1p(-p); // cumulative hazard −ln(1 − p)
+  const z = normInv(p);
+  switch (dist) {
+    case "exponential": return { dist, lambda: r4(h / time) };
+    case "weibull": return { dist, beta: 2, eta: r4(time / Math.sqrt(h)) };
+    case "normal": return p < 0.5 ? { dist, mu: r4(2 * time), sigma: r4(-time / z) } : { dist, mu: r4(time / 2), sigma: r4(time / 2 / Math.max(z, 1e-3)) };
+    case "lognormal": return { dist, tmed: r4(time * Math.exp(-z)), s: 1 };
+    case "gamma": {
+      let lo = 0, hi = 1;
+      while (gammaP(2, hi) < p) hi *= 2;
+      for (let i = 0; i < 100; i++) { const m = (lo + hi) / 2; if (gammaP(2, m) < p) lo = m; else hi = m; }
+      return { dist, alpha: 2, theta: r4(time / ((lo + hi) / 2)) };
+    }
+    case "uniform": return { dist, a: 0, b: r4(time / p) };
+    case "binomial": return { dist, q: r4(-Math.expm1(Math.log1p(-p) / 10)), n: 10, k: 1 };
+    case "poisson": return { dist, lambda: r4(h / time), k: 1 };
+  }
+  return null;
+}
+
 export function validate(doc) {
   const out = [];
   const gateIds = new Set();
@@ -123,9 +315,11 @@ export function validate(doc) {
     if (n.gate === "K_OF_N" && (!Number.isInteger(n.k) || n.k < 0 || n.k > n.children.length))
       out.push(t("issue.kRange", { id: n.id, n: n.children.length }));
   });
+  if (hasModels(doc) && !validTime(missionTime(doc))) out.push(t("issue.timeBad"));
   for (const [id, e] of Object.entries(doc.events)) {
     if (!id) out.push(t("issue.eventNoId"));
-    if (e.prob == null) out.push(t("issue.probMissing", { id }));
+    if (e.model) { if (!validModel(e.model)) out.push(t("issue.modelBad", { id })); }
+    else if (e.prob == null) out.push(t("issue.probMissing", { id }));
     else if (!(e.prob >= 0 && e.prob <= 1)) out.push(t("issue.probRange", { id }));
     if (e.dist && !validDist(e.dist)) out.push(t("issue.distBad", { id }));
   }
@@ -154,6 +348,12 @@ export function importTree(tree, probs = null) {
     const e = { name: n.name != null ? String(n.name) : id, prob: null, kind: n.event_type === "undeveloped" ? "undeveloped" : "basic", dist: null, samples: null };
     if (n.name_pt != null) e.name_pt = String(n.name_pt);
     setProb(e, n.prob);
+    const fm = n.failure_model;
+    if (fm && typeof fm === "object" && MODELS[fm.dist]) {
+      const m = { dist: fm.dist };
+      for (const k of MODELS[fm.dist]) m[k] = Number(fm[k]);
+      if (validModel(m)) { e.model = m; e.samples = null; } else notes.push(t("import.badModel", { id }));
+    }
     const u = n.uncertainty;
     if (u && typeof u === "object" && DISTS[u.dist]) {
       const d = { dist: u.dist };
@@ -191,7 +391,8 @@ export function importTree(tree, probs = null) {
   let root = conv(tree, []);
   if (root.t !== "gate") { root = gateNode("TOP", t("model.top"), "OR", [root]); notes.push(t("import.wrapped")); }
   const doc = { root, events, meta: {} };
-  for (const k of ["note", "note_pt"]) if (typeof tree[k] === "string") doc.meta[k] = tree[k];
+  for (const k of ["note", "note_pt", "time_unit"]) if (typeof tree[k] === "string") doc.meta[k] = tree[k];
+  if (validTime(tree.mission_time)) doc.meta.mission_time = tree.mission_time;
   if (probs) notes.push(...applyProbs(doc, probs));
   return { doc, notes };
 }
@@ -212,6 +413,7 @@ export function applyProbs(doc, probs) {
     const e = doc.events[id];
     if (!e) { unknown.push(id); continue; }
     setProb(e, p);
+    e.model = null;
     if (e.samples) { vectors++; e.dist = null; }
   }
   if (unknown.length) notes.push(t("import.unknownColumns", { ids: unknown.join(", ") }));
@@ -236,13 +438,17 @@ export function exportTree(doc, { engine = false } = {}) {
       o.event_type = e.kind;
       o.gate = null;
       o.prob = !engine && e.samples ? e.samples : e.prob;
+      if (!engine && e.model) o.failure_model = { ...e.model };
       if (!engine && e.dist) o.uncertainty = { ...e.dist };
       o.children = [];
       return o;
     }
     const o = { id: n.id, name: n.name };
     if (!engine && n.name_pt != null) o.name_pt = n.name_pt;
-    if (isRoot && !engine) for (const k of ["note", "note_pt"]) if (doc.meta[k]) o[k] = doc.meta[k];
+    if (isRoot && !engine) {
+      for (const k of ["note", "note_pt"]) if (doc.meta[k]) o[k] = doc.meta[k];
+      if (hasModels(doc) || doc.meta.mission_time != null) { o.mission_time = missionTime(doc); o.time_unit = timeUnit(doc); }
+    }
     o.event_type = isRoot ? "top" : "intermediate";
     o.gate = n.gate;
     if (n.gate === "K_OF_N") o.k = n.k;
