@@ -287,3 +287,11 @@ max_basic_events=32)` returns positive minimal cuts for AND/OR/K_OF_N models.
 Always inspect `complete`, `truncated` and `reason`; an incomplete list is not
 an exhaustive reliability result. XOR needs signed implicants and is rejected.
 Limits apply to enumeration, not a hard wall-clock or BDD-memory budget.
+
+## Citing
+
+If you use faultree in academic work, please cite it: GitHub's **Cite this repository** button (from [CITATION.cff](https://github.com/jmateusms/faultree/blob/main/CITATION.cff)) gives APA and BibTeX.
+
+## License
+
+BSD 3-Clause — see [LICENSE](https://github.com/jmateusms/faultree/blob/main/LICENSE).
