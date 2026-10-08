@@ -1,6 +1,7 @@
 // Small helpers shared by the GUI modules: DOM/SVG, number formats,
 // tooltip, downloads (JSON, SVG, PNG) and the JSON API.
 import { t, locale } from "./i18n.js";
+import { SET } from "./settings.js";
 
 export const $ = (id) => document.getElementById(id);
 export const SVGNS = "http://www.w3.org/2000/svg";
@@ -13,6 +14,10 @@ export const C = {
   accentLight: "#E4E9EB", card: "#FFFFFF",
   s1: "#2F6DB5", s2: "#C98A12", s3: "#B0456E", s4: "#2A9D8F",
 };
+// Markers of shared events: distinct dark hues away from the blue of the
+// probability scale and the selection, all readable under white text.
+export const SHARED = ["#B03A2E", "#2C6E2F", "#6B3FA0", "#8A5A00", "#0F6E6E", "#A13D74", "#5E6B1F", "#4A5568"];
+export const sharedColor = (mark) => SHARED[mark.index % SHARED.length];
 export const FONT = 'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
 export const MONO = 'ui-monospace, "SF Mono", Menlo, Consolas, monospace';
 
@@ -59,7 +64,7 @@ export function fmtP(p, sig = 4) {
   if (!Number.isFinite(p)) return "—";
   if (p === 0) return "0";
   const a = Math.abs(p);
-  if (a >= 1e-3 && a < 1e5) return p.toLocaleString(locale(), { maximumSignificantDigits: sig });
+  if (a >= 1e-3 && a < 1e5 && (SET.notation !== "sci" || a >= 1)) return p.toLocaleString(locale(), { maximumSignificantDigits: sig });
   const [m, e] = p.toExponential(sig - 1).split("e");
   return Number(m).toLocaleString(locale(), { maximumFractionDigits: sig - 1 }) + "e" + e.replace("+", "");
 }
@@ -68,7 +73,7 @@ const SUP = { "-": "⁻", 0: "⁰", 1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵
 export function fmtSci(p, sig = 4) {
   if (!isNum(p)) return fmtP(p, sig);
   if (p === 0) return "0";
-  if (Math.abs(p) >= 1e-2 && Math.abs(p) < 1e4) return fmtP(p, sig);
+  if (Math.abs(p) >= (SET.notation === "sci" ? 1 : 1e-2) && Math.abs(p) < 1e4) return fmtP(p, sig);
   const [m, e] = p.toExponential(sig - 1).split("e");
   const exp = String(Number(e)).split("").map((c) => SUP[c] || c).join("");
   return Number(m).toLocaleString(locale(), { minimumFractionDigits: sig - 1, maximumFractionDigits: sig - 1 }) + " × 10" + exp;

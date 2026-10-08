@@ -31,24 +31,33 @@ Nothing is loaded from the internet (it works offline) and it needs no extra
 dependency. Ctrl+C stops it. The interface is in Portuguese and English: it
 follows the browser's language, and the PT/EN switch changes it.
 
-![The pressure tank in the GUI: model on the left, probabilities on the tree on the right](docs/gui/tree.png)
+![The pressure tank in the GUI: model on the left, probabilities on the tree on the right](https://raw.githubusercontent.com/jmateusms/faultree/main/docs/gui/tree.png)
 
 The model is on the left:
 
 - **Tree**: the editor. Select a node to add basic events or gates, change
   the gate (AND, OR, XOR = exactly one, k-out-of-n), share a basic event
   between branches, or add a clone of a gate (faultree's `ref`); undo and
-  redo with Ctrl+Z / Ctrl+Shift+Z.
-- **Probabilities**: the point probability of every basic event and,
-  optionally, a distribution for the uncertainty analysis (lognormal by
-  median and error factor, beta, uniform, log-uniform); a CSV/Excel
-  probability file can be imported (one column per event; one row gives point
-  values, several rows give joint sample vectors).
+  redo with Ctrl+Z / Ctrl+Shift+Z. Every occurrence of a shared event, and a
+  gate together with its clones, carries the same marker in a colour of its
+  own (a letter A, B, C…, the colour alone, or the count ×n), and hovering or
+  selecting one highlights all the others.
+- **Probabilities**: the probability of every basic event, given directly or
+  by a failure model at a mission time t: p = F(t) for a time to failure that
+  is exponential, Weibull, normal, lognormal, gamma or uniform, or a count of
+  failures reaching k (binomial over n demands, Poisson over [0, t]). In
+  success mode the event value is the reliability 1 − F(t). Optionally, a
+  distribution of p for the uncertainty analysis (lognormal by median and
+  error factor, beta, uniform, log-uniform); a CSV/Excel probability file can
+  be imported (one column per event; one row gives point values, several rows
+  give joint sample vectors).
 - **JSON**: the model in faultree's format, to edit or paste (recursive or
   flat) and apply.
 - The top bar opens the examples in `examples/` and JSON files, saves the
   model in the recursive or the flat format, and switches between failure
-  analysis (Q) and success analysis (R, with reliabilities as inputs).
+  analysis (Q) and success analysis (R, with reliabilities as inputs). The
+  ⚙ button opens the settings: the shared-event marker, highlighting of
+  occurrences and automatic or scientific notation (kept in the browser).
 
 The results are on the right, recomputed as you edit:
 
@@ -78,10 +87,14 @@ The results are on the right, recomputed as you edit:
   what-if scenario and uncertainty run; every chart has SVG and PNG buttons.
 
 The GUI keeps an event's distribution in an `uncertainty` field
-(`{"dist": "lognormal", "median": 1e-3, "ef": 3}`) and an optional Portuguese
-name in `name_pt`; the engine ignores both. `examples/pressure_tank.json` is
-the pressure tank of the NRC Fault Tree Handbook (NUREG-0492), with
-illustrative probabilities. More screenshots are in [docs/gui](docs/gui).
+(`{"dist": "lognormal", "median": 1e-3, "ef": 3}`), its failure model in
+`failure_model` (`{"dist": "weibull", "beta": 1.8, "eta": 12000}`) with
+`mission_time` and `time_unit` on the top event, and an optional Portuguese
+name in `name_pt`; the engine ignores them and reads `prob`, which the GUI
+saves as F(t) at the mission time. `examples/pressure_tank.json` is the
+pressure tank of the NRC Fault Tree Handbook (NUREG-0492), with illustrative
+probabilities; `examples/cooling_system.json` uses every kind of failure
+model. More screenshots are in [docs/gui](https://github.com/jmateusms/faultree/tree/main/docs/gui).
 
 ## Installation
 
@@ -245,8 +258,10 @@ XOR duality, cycle detection, input validation, server behavior).
 - **Minimal Cut Sets at scale**: ZBDD-based extraction beyond the bounded
   enumeration.
 - **Variable Ordering**: Heuristics and `dd` sifting for BDD size reduction.
-- **Time-Dependent Analysis**: Exponential/Weibull distributions,
-  availability.
+- **Time-Dependent Analysis**: the GUI computes event probabilities from
+  failure models at one mission time; next: Q(t) curves, repairable
+  components (availability), failure models in the engine and CLI, and
+  uncertainty on model parameters (e.g. on λ).
 - **Sound Uncertainty Propagation**: jointly sampled Monte Carlo / LHS with
   percentile bounds (replacing per-event resampling).
 - **Common-Cause Failure**: beta-factor / MGL / alpha-factor groups.
