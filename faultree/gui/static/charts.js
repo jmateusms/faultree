@@ -1,7 +1,6 @@
-// Result charts in hand-written SVG (no libraries), in the manner of
-// drum-lab's charts.js: bar tables, scatter, histogram/CDF, interval plot,
-// cut-set contributions and the BDD drawing. Colours are SVG attributes so
-// an exported file looks the same as the page.
+// Result charts in hand-written SVG (no libraries): bar tables, scatter,
+// histogram/CDF, interval plot, cut-set contributions and the BDD drawing.
+// Colours are SVG attributes so an exported file looks the same as the page.
 import { svgEl, svgText, newSvg, C, fmtP, fmtNum, fmtPct, isNum, linScale, logScale,
   niceTicks, logTicks, bindTip, showTip, hideTip, trunc } from "./util.js";
 import { t } from "./i18n.js";
