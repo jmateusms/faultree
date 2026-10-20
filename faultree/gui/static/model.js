@@ -1,10 +1,16 @@
 // Editor model of a fault tree, adapted from the lab's fault-tree page.
 //
 // doc.root   gate {t:"gate", uid, id, name, name_pt?, gate, k, children}
-//            leaf {t:"leaf", uid, id}            (a basic event occurrence)
+//            leaf {t:"leaf", uid, id}            (an event occurrence)
 //            ref  {t:"ref", uid, ref}            (a clone of a gate: faultree's {"ref": id})
-// doc.events id -> {name, name_pt?, prob, kind, dist, samples, model?}
-//            one definition per basic event; repeated leaves share it.
+// doc.events id -> {name, name_pt?, prob, kind, dist, samples, model?, state?}
+//            one definition per leaf event; repeated leaves share it.
+//            kind: basic | undeveloped | house | conditioning (NUREG-0492).
+//            A house event is a switch: state true/false, no prob, model or
+//            dist (a prob kept from another kind is ignored and not saved). A
+//            conditioning event is the probability of an INHIBIT gate's
+//            condition given its input: one occurrence, under that gate only,
+//            without a failure model.
 //            prob: point probability (number or null); dist: optional
 //            uncertainty {dist, ...params}; samples: optional sample vector
 //            from a file (prob is then its mean); model: optional failure
@@ -13,7 +19,10 @@
 // doc.meta   {note?, note_pt?, mission_time?, time_unit?} carried through load/save.
 import { t, lang } from "./i18n.js";
 
-export const GATES = ["AND", "OR", "XOR", "K_OF_N"];
+export const GATES = ["AND", "OR", "XOR", "K_OF_N", "INHIBIT"];
+export const CYCLE_GATES = ["AND", "OR", "XOR", "K_OF_N"]; // the ⇄ button; INHIBIT comes from the select
+export const KINDS = ["basic", "undeveloped", "house", "conditioning"];
+export const isHouse = (e) => !!e && e.kind === "house";
 export const DISTS = {
   lognormal: ["median", "ef"],
   beta: ["a", "b"],
@@ -82,6 +91,8 @@ export function sharedMarks(doc) {
   return out;
 }
 export function eventIds(doc) { return [...occurrences(doc).keys()]; }
+// Events that are BDD variables (everything but house events).
+export function basicIds(doc) { return eventIds(doc).filter((id) => !isHouse(doc.events[id])); }
 export function findUid(doc, uid) { let r = null; walk(doc.root, (n, p, i) => { if (n.uid === uid) r = { n, p, i }; }); return r; }
 export function allIds(doc) { const s = new Set(Object.keys(doc.events)); walk(doc.root, (n) => { if (n.t === "gate") s.add(n.id); }); return s; }
 export function freshId(doc, prefix) { const ids = allIds(doc); let i = 1; while (ids.has(prefix + i)) i++; return prefix + i; }
@@ -89,10 +100,25 @@ export function gcEvents(doc) { const occ = occurrences(doc); for (const id of O
 // The name shown in the current language (name_pt when it exists).
 export function dispName(x) { return (lang() === "pt" && x && x.name_pt) || (x && x.name) || ""; }
 export function setDispName(x, v) { if (lang() === "pt" && x.name_pt != null) x.name_pt = v; else x.name = v; }
-export function newEvent(doc) {
-  const id = freshId(doc, "E");
-  doc.events[id] = { name: t("model.newEvent"), prob: 0.01, kind: "basic", dist: null, samples: null };
+export function newEvent(doc, kind = "basic") {
+  const id = freshId(doc, kind === "conditioning" ? "C" : "E");
+  doc.events[id] = { name: t(kind === "conditioning" ? "model.newCondition" : "model.newEvent"), prob: 0.01, kind, dist: null, samples: null };
   return leafNode(id);
+}
+// Change an event's kind, dropping what the new kind does not take.
+export function setKind(e, kind) {
+  e.kind = KINDS.includes(kind) ? kind : "basic";
+  if (e.kind === "house") { e.state = e.state === true; e.model = null; e.dist = null; e.samples = null; }
+  if (e.kind === "conditioning") e.model = null; // a conditional probability, not a time to failure
+}
+// A gate just made INHIBIT with fewer than two inputs and no conditioning
+// event gets a new one (the input stays first).
+export function ensureCondition(doc, g) {
+  if (g.gate !== "INHIBIT" || g.children.length >= 2) return null;
+  if (g.children.some((c) => c.t === "leaf" && doc.events[c.id] && doc.events[c.id].kind === "conditioning")) return null;
+  const c = newEvent(doc, "conditioning");
+  g.children.push(c);
+  return c;
 }
 export function newGate(doc) {
   const g = gateNode(freshId(doc, "G"), t("model.newGate"), "OR", []);
@@ -260,12 +286,12 @@ export function modelPair(m, time) {
 export function modelProb(m, time, success = false) { return modelPair(m, time)[success ? 1 : 0]; }
 export function missionTime(doc) { const v = doc.meta && doc.meta.mission_time; return v == null ? DEFAULT_T : v; }
 export function timeUnit(doc) { return (doc.meta && doc.meta.time_unit) || "h"; }
-export function hasModels(doc) { return Object.values(doc.events).some((e) => e.model); }
+export function hasModels(doc) { return Object.values(doc.events).some((e) => e.model && !isHouse(e)); }
 // Recompute prob for every event with a failure model.
 export function refreshModels(doc, success = false) {
   const time = missionTime(doc);
   for (const e of Object.values(doc.events)) {
-    if (!e.model) continue;
+    if (!e.model || isHouse(e)) continue;
     const p = modelProb(e.model, time, success);
     e.prob = Number.isFinite(p) ? p : null;
   }
@@ -300,7 +326,10 @@ export function validate(doc) {
   const out = [];
   const gateIds = new Set();
   const gmap = gates(doc);
+  const isCond = (n) => n.t === "leaf" && doc.events[n.id] && doc.events[n.id].kind === "conditioning";
+  const condBad = new Set();
   walk(doc.root, (n, p) => {
+    if (isCond(n) && (!p || p.gate !== "INHIBIT")) condBad.add(n.id);
     if (n.t === "ref") {
       if (!gmap.has(n.ref)) out.push(t("issue.refMissing", { id: n.ref }));
       else if (p && reachableGates(doc, n.ref, gmap).has(p.id)) out.push(t("issue.refCycle", { id: n.ref }));
@@ -312,12 +341,17 @@ export function validate(doc) {
     else gateIds.add(n.id);
     if (doc.events[n.id]) out.push(t("issue.gateIsEvent", { id: n.id }));
     if (!n.children.length) out.push(t("issue.gateEmpty", { id: n.id }));
+    else if (n.gate === "INHIBIT" && (n.children.length !== 2 || n.children.filter(isCond).length !== 1))
+      out.push(t("issue.inhibit", { id: n.id }));
     if (n.gate === "K_OF_N" && (!Number.isInteger(n.k) || n.k < 0 || n.k > n.children.length))
       out.push(t("issue.kRange", { id: n.id, n: n.children.length }));
   });
+  for (const id of condBad) out.push(t("issue.condParent", { id }));
+  for (const [id, k] of occurrences(doc)) if (k > 1 && doc.events[id] && doc.events[id].kind === "conditioning") out.push(t("issue.condTwice", { id }));
   if (hasModels(doc) && !validTime(missionTime(doc))) out.push(t("issue.timeBad"));
   for (const [id, e] of Object.entries(doc.events)) {
     if (!id) out.push(t("issue.eventNoId"));
+    if (isHouse(e)) continue; // a switch: its state is all it needs
     if (e.model) { if (!validModel(e.model)) out.push(t("issue.modelBad", { id })); }
     else if (e.prob == null) out.push(t("issue.probMissing", { id }));
     else if (!(e.prob >= 0 && e.prob <= 1)) out.push(t("issue.probRange", { id }));
@@ -340,15 +374,17 @@ export function importTree(tree, probs = null) {
     (n.children || []).forEach(reg);
   })(tree);
   const isLeaf = (n) => !(n.children || []).length &&
-    (n.event_type === "basic" || n.event_type === "undeveloped" || n.gate == null || n.gate === "BASIC");
+    (KINDS.includes(n.event_type) || n.gate == null || n.gate === "BASIC");
   const events = {};
   const seenGates = new Set();
   function eventFrom(n) {
     const id = String(n.id);
-    const e = { name: n.name != null ? String(n.name) : id, prob: null, kind: n.event_type === "undeveloped" ? "undeveloped" : "basic", dist: null, samples: null };
+    const kind = KINDS.includes(n.event_type) ? n.event_type : "basic";
+    const e = { name: n.name != null ? String(n.name) : id, prob: null, kind, dist: null, samples: null };
     if (n.name_pt != null) e.name_pt = String(n.name_pt);
+    if (kind === "house") { e.state = n.state === true; return e; }
     setProb(e, n.prob);
-    const fm = n.failure_model;
+    const fm = kind === "conditioning" ? null : n.failure_model;
     if (fm && typeof fm === "object" && MODELS[fm.dist]) {
       const m = { dist: fm.dist };
       for (const k of MODELS[fm.dist]) m[k] = Number(fm[k]);
@@ -407,24 +443,27 @@ function setProb(e, p) {
 // Probability columns (from a file or a request's "probs") onto events.
 export function applyProbs(doc, probs) {
   const notes = [];
-  const unknown = [];
+  const unknown = [], houses = [];
   let vectors = 0;
   for (const [id, p] of Object.entries(probs)) {
     const e = doc.events[id];
     if (!e) { unknown.push(id); continue; }
+    if (isHouse(e)) { houses.push(id); continue; }
     setProb(e, p);
     e.model = null;
     if (e.samples) { vectors++; e.dist = null; }
   }
   if (unknown.length) notes.push(t("import.unknownColumns", { ids: unknown.join(", ") }));
+  if (houses.length) notes.push(t("import.houseColumns", { ids: houses.join(", ") }));
   if (vectors) notes.push(t("import.vectors", { n: vectors }));
   return notes;
 }
 
 // ---------------------------------------------------------- export ------
-// Recursive faultree JSON. The first occurrence of a basic event carries its
+// Recursive faultree JSON. The first occurrence of a leaf event carries its
 // definition and later ones are {"ref": id}; gate clones are {"ref": id}.
-// engine: point probabilities only, without GUI-only fields.
+// engine: point probabilities only, without GUI-only fields. House events
+// carry their state and never a prob.
 export function exportTree(doc, { engine = false } = {}) {
   const emitted = new Set();
   function emit(n, isRoot) {
@@ -437,6 +476,7 @@ export function exportTree(doc, { engine = false } = {}) {
       if (!engine && e.name_pt != null) o.name_pt = e.name_pt;
       o.event_type = e.kind;
       o.gate = null;
+      if (isHouse(e)) { o.state = e.state === true; o.children = []; return o; }
       o.prob = !engine && e.samples ? e.samples : e.prob;
       if (!engine && e.model) o.failure_model = { ...e.model };
       if (!engine && e.dist) o.uncertainty = { ...e.dist };
@@ -468,6 +508,11 @@ export function exportFlat(doc) {
     o.branches = n.children.map((c) => (c.t === "ref" ? c.ref : c.id));
     ft.push(o);
   });
-  const be = eventIds(doc).map((id) => ({ label: id, prob: doc.events[id].samples || doc.events[id].prob }));
+  const be = eventIds(doc).map((id) => {
+    const e = doc.events[id], o = { label: id };
+    if (e.kind !== "basic") o.event_type = e.kind;
+    if (isHouse(e)) o.state = e.state === true; else o.prob = e.samples || e.prob;
+    return o;
+  });
   return { ft_nodes: ft, be_nodes: be };
 }

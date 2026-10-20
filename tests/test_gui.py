@@ -671,3 +671,98 @@ def test_the_failure_model_example_is_consistent():
         assert got["after"][eid] == pytest.approx(prob, rel=1e-11), eid
     result = engine.analyze_point(tree)
     assert result["Q"] == pytest.approx(analyze(tree)["Q"])
+
+
+# --------------------------------------------- NUREG-0492 symbols (GUI side) --
+def test_nureg_symbols_example_runs_point_analysis_and_what_if():
+    tree = load("nureg_symbols.json")
+    out = strict_json(engine.analyze_point(tree))
+    assert out["Q"] == pytest.approx(analyze(tree)["Q"], rel=1e-15)
+    assert "MAINT_A" not in out["basic_events"] and "RV" in out["basic_events"]
+    assert out["probabilities"]["MAINT_A"] == 0.0
+    assert "MAINT_A" not in out["importance"] and "MAINT_A" not in out["inputs"]
+    assert out["cut_sets"]["available"] and ["PCTRL", "RV"] in [r["events"] for r in out["cut_sets"]["rows"]]
+    forced = engine.what_if(tree, {"RV": "failed"})
+    overp = 1 - (1 - 0.002) * (1 - 0.001)
+    assert forced["probabilities"]["RUPT"] == pytest.approx(overp, rel=1e-12)
+    assert forced["base_Q"] == pytest.approx(out["Q"], rel=1e-15)
+    with pytest.raises(GuiError, match="MAINT_A"):  # a house event is a switch, not forced
+        engine.what_if(tree, {"MAINT_A": "failed"})
+
+
+@needs_node
+def test_nureg_symbols_round_trip_through_the_editor_model():
+    tree = engine.import_tree(load("nureg_symbols.json"))["tree"]
+    got = run_model_js(f"""
+        const {{ doc, notes }} = M.importTree({json.dumps(tree)});
+        console.log(JSON.stringify({{ notes, issues: M.validate(doc), kinds: Object.fromEntries(
+          Object.entries(doc.events).map(([id, e]) => [id, e.kind])), basic: M.basicIds(doc),
+          saved: M.exportTree(doc), engine: M.exportTree(doc, {{ engine: true }}), flat: M.exportFlat(doc) }}));""")
+    assert got["notes"] == [] and got["issues"] == []
+    assert got["kinds"] == {"PCTRL": "basic", "OPER": "basic", "RV": "conditioning", "PUMP_A": "basic",
+                            "MAINT_A": "house", "PUMP_B": "basic", "POWER": "undeveloped"}
+    assert "MAINT_A" not in got["basic"] and len(got["basic"]) == 6
+    saved, engine_tree = got["saved"], got["engine"]
+    assert saved["children"][0]["gate"] == "INHIBIT"
+    house = saved["children"][1]["children"][0]["children"][1]
+    assert house == {"id": "MAINT_A", "name": "Train A in maintenance", "name_pt": "Trem A em manutenção",
+                     "event_type": "house", "gate": None, "state": False, "children": []}
+    engine_house = engine_tree["children"][1]["children"][0]["children"][1]
+    assert "prob" not in engine_house and engine_house["state"] is False
+    assert engine_tree["children"][0]["children"][1]["event_type"] == "conditioning"
+    q = analyze(tree)["Q"]
+    assert analyze(saved)["Q"] == pytest.approx(q, rel=1e-15)
+    assert analyze(engine_tree)["Q"] == pytest.approx(q, rel=1e-15)
+    be = {b["label"]: b for b in got["flat"]["be_nodes"]}
+    assert be["MAINT_A"] == {"label": "MAINT_A", "event_type": "house", "state": False}
+    assert be["RV"] == {"label": "RV", "event_type": "conditioning", "prob": 0.05}
+    assert be["POWER"] == {"label": "POWER", "event_type": "undeveloped", "prob": 0.0005}
+    assert be["PUMP_A"] == {"label": "PUMP_A", "prob": 0.003}
+    assert {"label": "RUPT", "gate": "INHIBIT", "branches": ["OVERP", "RV"]} in got["flat"]["ft_nodes"]
+    flat = engine.import_tree(got["flat"])["tree"]
+    assert analyze(flat)["Q"] == pytest.approx(q, rel=1e-15)
+    # the flat file comes back with the same kinds and state
+    again = run_model_js(f"""
+        const {{ doc }} = M.importTree({json.dumps(flat)});
+        console.log(JSON.stringify(Object.fromEntries(Object.entries(doc.events).map(([id, e]) => [id, [e.kind, e.state ?? null]]))));""")
+    assert again["MAINT_A"] == ["house", False] and again["RV"] == ["conditioning", None]
+    assert again["POWER"] == ["undeveloped", None]
+
+
+@needs_node
+def test_inhibit_and_conditioning_issues_and_house_events_without_probability():
+    got = run_model_js("""
+        const ev = (kind, extra = {}) => ({ name: "", prob: 0.1, kind, dist: null, samples: null, ...extra });
+        const mk = (children, events) => ({ root: M.gateNode("TOP", "", "OR", children), events, meta: {} });
+        const inhibit = (id, ...ids) => M.gateNode(id, "", "INHIBIT", ids.map(M.leafNode));
+        const out = {};
+        out.ok = M.validate(mk([inhibit("I", "A", "C")], { A: ev("basic"), C: ev("conditioning") }));
+        out.three = M.validate(mk([inhibit("I", "A", "B", "C")], { A: ev("basic"), B: ev("basic"), C: ev("conditioning") }));
+        out.noCond = M.validate(mk([inhibit("I", "A", "B")], { A: ev("basic"), B: ev("basic") }));
+        out.outside = M.validate(mk([M.leafNode("A"), M.leafNode("C")], { A: ev("basic"), C: ev("conditioning") }));
+        out.twice = M.validate(mk([inhibit("I1", "A", "C"), inhibit("I2", "B", "C")], { A: ev("basic"), B: ev("basic"), C: ev("conditioning") }));
+        out.house = M.validate(mk([M.leafNode("A"), M.leafNode("H")], { A: ev("basic"), H: ev("house", { prob: null, state: true }) }));
+        // a gate made INHIBIT over its one input gets a conditioning event (undo restores both)
+        const d = mk([M.gateNode("G", "", "INHIBIT", [M.leafNode("A")])], { A: ev("basic") });
+        const added = M.ensureCondition(d, d.root.children[0]);
+        out.added = [d.events[added.id].kind, M.validate(d), M.ensureCondition(d, d.root.children[0])];
+        // a house event drops what it does not take and is never sent with a probability
+        const e = ev("basic", { model: { dist: "exponential", lambda: 1e-3 }, dist: { dist: "lognormal", median: 0.1, ef: 3 } });
+        M.setKind(e, "house");
+        const h = mk([M.leafNode("A"), M.leafNode("H")], { A: ev("basic"), H: e });
+        out.setKind = [e.state, e.model, e.dist, M.exportTree(h, { engine: true }).children[1]];
+        out.applied = M.applyProbs(h, { H: 0.5, A: 0.2 });
+        console.log(JSON.stringify(out));""")
+    inhibit = "INHIBIT gate {} needs exactly two inputs: the input event and one conditioning event."
+    assert got["ok"] == []
+    assert got["three"] == [inhibit.format("I")]
+    assert got["noCond"] == [inhibit.format("I")]
+    assert got["outside"] == ["Conditioning event C must be an input of an INHIBIT gate."]
+    assert got["twice"] == ["Conditioning event C appears more than once; it belongs to one INHIBIT gate"
+                            " (“Make independent” gives a copy)."]
+    assert got["house"] == []
+    assert got["added"] == ["conditioning", [], None]
+    state, model, dist, node = got["setKind"]
+    assert (state, model, dist) == (False, None, None)
+    assert node == {"id": "H", "name": "", "event_type": "house", "gate": None, "state": False, "children": []}
+    assert got["applied"] == ["House events take a state, not a probability; these columns were ignored: H."]

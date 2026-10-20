@@ -39,14 +39,31 @@ class CompiledTree:
     success_mode: bool
 
 
+LEAF_EVENT_TYPES = ("basic", "undeveloped", "house", "conditioning")
+
+
 def _is_leaf(node: Dict[str, Any]) -> bool:
-    """A node is a basic/undeveloped (leaf) event iff it has no children and is
-    marked basic either by event_type or by gate."""
+    """A node is a leaf event (basic, undeveloped, house or conditioning) iff
+    it has no children and is marked as a leaf either by event_type or by
+    gate."""
     if node.get("children", []):
         return False
     et = node.get("event_type")
     gate = node.get("gate")
-    return et in ("basic", "undeveloped") or gate in (None, "BASIC")
+    return et in LEAF_EVENT_TYPES or gate in (None, "BASIC")
+
+
+def _is_house(node: Dict[str, Any]) -> bool:
+    """A house event (NUREG-0492's external event) is a switch set to occurred
+    (``state: true``) or not (``state: false``). It is a constant in the BDD,
+    not a variable: it takes no probability and has no importance."""
+    return node.get("event_type") == "house"
+
+
+def _house_value(node: Dict[str, Any], success_mode: bool) -> bool:
+    """The constant a house event contributes. In success mode the leaves are
+    success indicators, so an occurred house event contributes false."""
+    return bool(node["state"]) != success_mode
 
 
 def _children_of(node: Any) -> List[Dict[str, Any]]:
@@ -79,7 +96,8 @@ def collect_basic_events(node: Dict[str, Any], vars_out: List[str]) -> None:
     if "ref" in node:
         return
     if _is_leaf(node):
-        vars_out.append(_leaf_id(node))
+        if not _is_house(node):
+            vars_out.append(_leaf_id(node))
         return
     for ch in _children_of(node):
         collect_basic_events(ch, vars_out)
@@ -158,9 +176,12 @@ def _gate_semantics(node: Dict[str, Any], n_children: int, success_mode: bool) -
       AND <-> OR;  at-least-k -> at-least-(n-k+1);
       exactly-one(x) fails <-> NOT exactly-(n-1)(y)   [not NOT exactly-one(y),
       which is wrong for n >= 3].
+    INHIBIT is an AND of its input and its conditioning event (NUREG-0492):
+    the conditioning event's probability is that of the enabling condition
+    given the input, so the product is exact.
     """
     gate = node.get("gate")
-    if gate == "AND":
+    if gate == "AND" or gate == "INHIBIT":
         return ("OR", None) if success_mode else ("AND", None)
     if gate == "OR":
         return ("AND", None) if success_mode else ("OR", None)
@@ -228,6 +249,8 @@ def _walk(node: Dict[str, Any],
 
 def node_to_bdd(bdd: BDD, node: Dict[str, Any], registry: Optional[Dict[str, Dict[str, Any]]] = None, success_mode: bool = False) -> Function:
     def leaf(n: Dict[str, Any]) -> Function:
+        if _is_house(n):
+            return bdd.true if _house_value(n, success_mode) else bdd.false
         return bdd.var(str(n["id"]))
 
     def combine(kind: str, k: Optional[int], parts: List[Function]) -> Function:
@@ -254,6 +277,8 @@ def node_to_bdd(bdd: BDD, node: Dict[str, Any], registry: Optional[Dict[str, Dic
 
 def node_to_expr(node: Dict[str, Any], registry: Optional[Dict[str, Dict[str, Any]]] = None, use_names: bool = False, success_mode: bool = False) -> str:
     def leaf(n: Dict[str, Any]) -> str:
+        if _is_house(n):
+            return "TRUE" if _house_value(n, success_mode) else "FALSE"
         if use_names:
             return str(n.get("name") or n.get("id"))
         return str(n.get("id"))
@@ -279,6 +304,8 @@ def node_to_expr(node: Dict[str, Any], registry: Optional[Dict[str, Dict[str, An
 
 def node_to_symbolic(node: Dict[str, Any], registry: Optional[Dict[str, Dict[str, Any]]] = None, use_names: bool = False, success_mode: bool = False) -> str:
     def leaf(n: Dict[str, Any]) -> str:
+        if _is_house(n):
+            return "1" if _house_value(n, success_mode) else "0"
         if use_names:
             return str(n.get("name") or n.get("id"))
         return str(n.get("id"))
@@ -357,12 +384,67 @@ def gather_nodes(node: Dict[str, Any], acc: Dict[str, Dict[str, Any]]) -> None:
     visit(node, "root")
 
 
+def _check_special_events(tree: Dict[str, Any]) -> None:
+    """Validate house events, INHIBIT gates and conditioning events.
+
+    A house event has a boolean ``state`` and no probability. An INHIBIT gate
+    has exactly two inputs: the input event and one conditioning event. A
+    conditioning event appears only there and only once, because its
+    probability is conditional on that gate's input; sharing it would apply
+    the same condition to another event."""
+    registry: Dict[str, Dict[str, Any]] = {}
+    gather_nodes(tree, registry)
+    conditioning_seen: Dict[str, int] = {}
+
+    def visit(node: Dict[str, Any], parent_gate: Optional[str]) -> None:
+        if "ref" in node:
+            target = registry.get(str(node["ref"]))
+            if target is not None and target.get("event_type") == "conditioning":
+                raise ValueError(
+                    f"Conditioning event '{node['ref']}' cannot be shared by ref: "
+                    "it belongs to one INHIBIT gate")
+            return
+        nid = node.get("id")
+        et = node.get("event_type")
+        if et in ("house", "conditioning") and _children_of(node):
+            raise ValueError(f"{et.capitalize()} event '{nid}' cannot have children")
+        if et == "house":
+            if not isinstance(node.get("state"), bool):
+                raise ValueError(
+                    f"House event '{nid}' needs a boolean 'state' (true: the event "
+                    "occurred, false: it did not)")
+            if node.get("prob") is not None:
+                raise ValueError(
+                    f"House event '{nid}' takes 'state' (true/false), not 'prob'")
+        if et == "conditioning":
+            if parent_gate != "INHIBIT":
+                raise ValueError(
+                    f"Conditioning event '{nid}' must be an input of an INHIBIT gate")
+            conditioning_seen[str(nid)] = conditioning_seen.get(str(nid), 0) + 1
+            if conditioning_seen[str(nid)] > 1:
+                raise ValueError(
+                    f"Conditioning event '{nid}' appears more than once: it belongs "
+                    "to one INHIBIT gate")
+        children = _children_of(node)
+        for child in children:
+            visit(child, node.get("gate"))
+        if node.get("gate") == "INHIBIT":
+            conditions = [c for c in children
+                          if "ref" not in c and c.get("event_type") == "conditioning"]
+            if len(children) != 2 or len(conditions) != 1:
+                raise ValueError(
+                    f"INHIBIT gate '{nid}' needs exactly two inputs: the input "
+                    "event and one conditioning event (event_type 'conditioning')")
+
+    visit(tree, None)
+
+
 def var_probs_from_tree(tree: Dict[str, Any]) -> Dict[str, Any]:
     nodes: Dict[str, Dict[str, Any]] = {}
     gather_nodes(tree, nodes)
     probs: Dict[str, Any] = {}
     for nid, n in nodes.items():
-        if _is_leaf(n):
+        if _is_leaf(n) and not _is_house(n):
             if "prob" in n and n["prob"] is not None:
                 val = n["prob"]
                 if isinstance(val, list):
@@ -648,9 +730,16 @@ def normalize_tree(tree: Dict[str, Any]) -> Dict[str, Any]:
             }
 
             if nid in be_nodes:
-                new_node["event_type"] = "basic"
+                event_type = node_def.get("event_type", "basic")
+                if event_type not in LEAF_EVENT_TYPES:
+                    raise ValueError(
+                        f"Flat-format be_nodes entry '{nid}' has event_type "
+                        f"{event_type!r}; expected one of {', '.join(LEAF_EVENT_TYPES)}")
+                new_node["event_type"] = event_type
                 new_node["gate"] = None
                 new_node["prob"] = node_def.get("prob")
+                if "state" in node_def:
+                    new_node["state"] = node_def["state"]
                 new_node["children"] = []
             else:
                 new_node["event_type"] = "top" if nid == root_id else "intermediate"
@@ -676,11 +765,13 @@ def normalize_tree(tree: Dict[str, Any]) -> Dict[str, Any]:
         if unreachable:
             raise ValueError("Flat-format contains disconnected/inaccessible "
                              "nodes: " + ", ".join(unreachable))
+        _check_special_events(normalized)
         return normalized
     # Also validate recursive trees early, before BDD construction or output
     # maps can silently overwrite an id.
     registry: Dict[str, Dict[str, Any]] = {}
     gather_nodes(tree, registry)
+    _check_special_events(tree)
     return tree
 
 

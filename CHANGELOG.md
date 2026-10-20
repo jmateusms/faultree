@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- NUREG-0492 symbols: house events (`event_type: "house"`, `state`
+  true/false), constants in the BDD that switch configurations without a
+  probability; the INHIBIT gate with its conditioning event
+  (`event_type: "conditioning"`, `prob` = P(condition | input)), exact as
+  input × condition. Validation rejects a house event without a boolean
+  `state` or with a `prob`, an INHIBIT gate without exactly one input and
+  one conditioning event, and a conditioning event outside its INHIBIT gate
+  or shared. `examples/nureg_symbols.json` uses them.
+- Flat format: `be_nodes` entries may carry `event_type` (basic,
+  undeveloped, house, conditioning) and `state`.
+
 ## 0.4.0 — 2026-10-08
 
 ### Added

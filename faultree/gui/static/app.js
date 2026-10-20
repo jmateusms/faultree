@@ -67,7 +67,7 @@ function changed(opts = {}) {
   M.refreshModels(doc(), S.success);
   S.version++;
   S.issues = M.validate(doc());
-  for (const id of Object.keys(S.whatif.forced)) if (!doc().events[id]) delete S.whatif.forced[id];
+  for (const id of Object.keys(S.whatif.forced)) if (!doc().events[id] || M.isHouse(doc().events[id])) delete S.whatif.forced[id];
   if (S.selUid != null && !M.findUid(doc(), S.selUid)) S.selUid = null;
   $("btnUndo").disabled = !S.hist.past.length;
   $("btnRedo").disabled = !S.hist.future.length;
@@ -150,7 +150,7 @@ async function runWhatIf() {
 }
 function uncInputs() {
   const distributions = {}, samples = {};
-  for (const id of M.eventIds(doc())) {
+  for (const id of M.basicIds(doc())) {
     const e = doc().events[id];
     if (e.dist) distributions[id] = e.dist;
     else if (e.samples) samples[id] = e.samples;
@@ -202,10 +202,12 @@ function editTip(n) {
     return [`${n.id} — ${M.dispName(n)}`, gateDesc(n.gate), p != null ? [S.success ? "R" : "P", fmtP(p, 6)] : null, sharedLine(n.id)];
   }
   const e = doc().events[n.id];
+  if (M.isHouse(e)) return [`${n.id} — ${M.dispName(e)}`, [t("side.state"), stateText(e)], t("side.houseHelp"), sharedLine(n.id)];
   return [`${n.id} — ${M.dispName(e)}`, [S.success ? t("probs.r") : "p", fmtP(e.prob, 6)],
     e.model ? [t("model.label"), modelText(e.model)] : null,
     e.dist ? [t("probs.dist"), distText(e.dist)] : null, sharedLine(n.id)];
 }
+const stateText = (e) => (e.state === true ? t("side.stateTrue") : t("side.stateFalse"));
 // "Shared event (A): appears 2 times", for tooltips.
 function sharedLine(key) {
   const mk = M.sharedMarks(doc()).get(key);
@@ -242,8 +244,8 @@ function nodeAction(act, uid) {
   if (act === "addEvent") { const c = M.newEvent(doc()); n.children.push(c); S.selUid = c.uid; }
   else if (act === "addGate") { const c = M.newGate(doc()); n.children.push(c); S.selUid = c.uid; }
   else if (act === "cycle") {
-    if (n.t === "gate") { n.gate = M.GATES[(M.GATES.indexOf(n.gate) + 1) % M.GATES.length]; if (n.gate === "K_OF_N") n.k = Math.min(Math.max(1, n.k || 2), Math.max(1, n.children.length)); }
-    else if (n.t === "leaf") { const e = doc().events[n.id]; e.kind = e.kind === "basic" ? "undeveloped" : "basic"; }
+    if (n.t === "gate") { n.gate = M.CYCLE_GATES[(M.CYCLE_GATES.indexOf(n.gate) + 1) % M.CYCLE_GATES.length]; if (n.gate === "K_OF_N") n.k = Math.min(Math.max(1, n.k || 2), Math.max(1, n.children.length)); }
+    else if (n.t === "leaf") { const e = doc().events[n.id]; if (e.kind === "basic" || e.kind === "undeveloped") M.setKind(e, e.kind === "basic" ? "undeveloped" : "basic"); }
   } else if (act === "delete" && f.p) { f.p.children.splice(f.i, 1); S.selUid = f.p.uid; }
   changed();
 }
@@ -285,14 +287,20 @@ function renderSide() {
     const e = doc().events[n.id];
     const occ = M.occurrences(doc()).get(n.id) || 1;
     const others = Object.keys(doc().events).filter((id) => id !== n.id);
-    box.innerHTML = `<h3>${esc(e.kind === "undeveloped" ? t("side.undeveloped") : t("side.basic"))}</h3>
+    const title = { basic: t("side.basic"), undeveloped: t("side.undeveloped"), house: t("side.house"), conditioning: t("side.conditioning") }[e.kind];
+    // A house event takes a state instead of a probability; a conditioning
+    // event a probability without a failure model.
+    const first = e.kind === "house" ? `<label class="field"><span>${esc(t("side.state"))}</span><select id="fState"></select></label>`
+      : e.kind === "conditioning" ? "" : `<label class="field"><span>${esc(t("model.label"))}</span><select id="fModelSel"></select></label>`;
+    const probs = e.kind === "house" ? `<p class="hint">${esc(t("side.houseHelp"))}</p>`
+      : `${e.kind === "conditioning" ? `<p class="hint">${esc(t("side.condHelp"))}</p>` : ""}<p class="hint">${esc(t("probs.dist"))}: ${esc(e.dist ? distText(e.dist) : e.samples ? t("probs.samples", { n: e.samples.length }) : "—")} · <a href="#" data-side="toProbs">${esc(t("side.editProbs"))}</a></p>`;
+    box.innerHTML = `<h3>${esc(title)}</h3>
       <div class="row2"><label class="field"><span>Id</span><input type="text" id="fId" value="${esc(n.id)}" spellcheck="false"></label>
       <label class="field"><span>${esc(t("side.name"))}</span><input type="text" id="fName" value="${esc(M.dispName(e))}" style="font-family:var(--sans)"></label></div>
       <p class="hint" style="margin-top:-4px">${esc(t("side.idHelp"))}</p>
-      <div class="row2"><label class="field"><span>${esc(t("model.label"))}</span><select id="fModelSel"></select></label>
-      <label class="field"><span>${esc(t("side.kind"))}</span><select id="fKind"><option value="basic"${e.kind === "basic" ? " selected" : ""}>${esc(t("side.kindBasic"))}</option><option value="undeveloped"${e.kind === "undeveloped" ? " selected" : ""}>${esc(t("side.kindUndev"))}</option></select></label></div>
+      <div class="row2">${first}<label class="field"><span>${esc(t("side.kind"))}</span><select id="fKind">${M.KINDS.map((k) => `<option value="${k}"${e.kind === k ? " selected" : ""}>${esc(t("kind." + k))}</option>`).join("")}</select></label></div>
       <div id="fModel"></div>
-      <p class="hint">${esc(t("probs.dist"))}: ${esc(e.dist ? distText(e.dist) : e.samples ? t("probs.samples", { n: e.samples.length }) : "—")} · <a href="#" data-side="toProbs">${esc(t("side.editProbs"))}</a></p>
+      ${probs}
       ${others.length ? `<div class="btnrow"><select id="fExisting" aria-label="${esc(t("side.useOther"))}" style="flex:1;min-width:0">${others.map((id) => opt(id, M.dispName(doc().events[id]))).join("")}</select><button type="button" class="btn ghost sm" data-side="useExisting">${esc(t("side.useThis"))}</button></div>` : ""}
       <div class="btnrow">${move}${occ > 1 ? `<button type="button" class="btn ghost sm" data-side="detach">${esc(t("side.detach"))}</button>` : ""}<button type="button" class="btn ghost sm" data-side="wrap">${esc(t("side.wrap"))}</button>${remove}</div>
       <p class="msg err" id="fMsg"></p>`;
@@ -310,13 +318,18 @@ function renderSide() {
 // The probability of the selected event: a fixed value or a failure model.
 function fillSideModel(n) {
   const e = doc().events[n.id];
+  if (M.isHouse(e)) { const st = stateSelect(e, n.id); st.id = "fState"; $("fState").replaceWith(st); return; }
   const host = $("fModel");
-  const sel = modelSelect(e, n.id);
-  sel.id = "fModelSel";
-  sel.disabled = !!e.samples;
-  $("fModelSel").replaceWith(sel);
+  if (e.kind !== "conditioning") {
+    const sel = modelSelect(e, n.id);
+    sel.id = "fModelSel";
+    sel.disabled = !!e.samples;
+    $("fModelSel").replaceWith(sel);
+  }
   if (!e.model) {
-    const pl = el("label", { class: "field" }, el("div", { class: "row2" }, host));
+    const pl = el("label", { class: "field" });
+    if (e.kind === "conditioning") $("fKind").parentElement.before(pl); // beside the kind
+    else el("div", { class: "row2" }, host).appendChild(pl);
     el("span", {}, pl, S.success ? t("probs.r") : t("probs.p"));
     const pin = el("input", { type: "text", id: "fProb", inputmode: "decimal", value: numText(e.prob), spellcheck: "false", disabled: !!e.samples }, pl);
     pin.addEventListener("input", () => {
@@ -330,6 +343,15 @@ function fillSideModel(n) {
   const out = el("p", { class: "mono", style: "margin:0 0 6px" }, null, modelAt(e));
   host.appendChild(modelParams(e, n.id, () => { out.textContent = modelAt(e); }, { side: false }));
   host.appendChild(out);
+}
+// State of house event `e`: occurred (true) or not (false); short labels
+// for the probabilities table.
+function stateSelect(e, id, short = false) {
+  const sel = el("select", { "aria-label": t("side.state") + " " + id });
+  el("option", { value: "true", selected: e.state === true }, sel, short ? t("state.true") : t("side.stateTrue"));
+  el("option", { value: "false", selected: e.state !== true }, sel, short ? t("state.false") : t("side.stateFalse"));
+  sel.addEventListener("change", () => { pushHist(); e.state = sel.value === "true"; changed(); });
+  return sel;
 }
 // Fixed value or failure model of event `e` (changing it re-renders).
 function modelSelect(e, id) {
@@ -405,10 +427,15 @@ function bindSide(n, f) {
     changed({ side: false });
   });
   if (n.t === "gate") {
-    $("fGate").addEventListener("change", (ev) => { pushHist(); n.gate = ev.target.value; if (n.gate === "K_OF_N") n.k = Math.min(Math.max(1, n.k || 2), Math.max(1, n.children.length)); changed(); });
+    $("fGate").addEventListener("change", (ev) => {
+      pushHist(); n.gate = ev.target.value;
+      if (n.gate === "K_OF_N") n.k = Math.min(Math.max(1, n.k || 2), Math.max(1, n.children.length));
+      M.ensureCondition(doc(), n); // INHIBIT: input + a new conditioning event
+      changed();
+    });
     $("fK").addEventListener("input", (ev) => { const k = Number(ev.target.value); if (!Number.isInteger(k)) return; pushHist("k" + n.uid); n.k = k; changed({ side: false }); });
   } else {
-    $("fKind").addEventListener("change", (ev) => { pushHist(); doc().events[n.id].kind = ev.target.value; changed(); });
+    $("fKind").addEventListener("change", (ev) => { pushHist(); M.setKind(doc().events[n.id], ev.target.value); changed(); });
   }
 }
 function sideAction(act, n, f) {
@@ -457,7 +484,12 @@ function renderEvents() {
     if (marks.has(id)) markChip(marks.get(id), td0).style.marginLeft = "6px";
     if (M.dispName(e) !== id) el("span", { class: "name", title: M.dispName(e) }, td0, M.dispName(e));
     const td1 = el("td", { class: "pcell" }, tr);
-    if (!e.samples) td1.appendChild(modelSelect(e, id));
+    if (M.isHouse(e)) { // a switch: its state, no probability or distribution
+      td1.appendChild(stateSelect(e, id, true));
+      el("td", { class: "hint", colspan: 3 }, tr, t("probs.houseNote"));
+      continue;
+    }
+    if (!e.samples && e.kind !== "conditioning") td1.appendChild(modelSelect(e, id));
     if (e.model) {
       const out = el("span", { class: "mono pout", title: modelAt(e) }, null, "= " + fmtP(e.prob, 4));
       const box = modelParams(e, id, () => { out.textContent = "= " + fmtP(e.prob, 4); out.title = modelAt(e); }, { events: false });
@@ -564,7 +596,7 @@ function renderSummary() {
   const box = $("summary");
   box.replaceChildren();
   const d = doc();
-  const nBasic = M.eventIds(d).length, nGates = M.gates(d).size;
+  const nBasic = M.basicIds(d).length, nGates = M.gates(d).size;
   if (S.issues.length) {
     chip(box, t("sum.model"), t("sum.incomplete"), t("sum.incompleteHint"), "hero");
     return;
@@ -609,6 +641,8 @@ function card(host, title, exportName) {
 }
 
 // tree with probabilities ------------------------------------------------
+// Colour scale of the drawn values, without house events (constants 0 or 1).
+const scaleOf = (...maps) => probScale(maps.flatMap((m) => Object.entries(m).filter(([id]) => !M.isHouse(doc().events[id])).map(([, v]) => v)));
 function resultTip(n, probs, extra = {}) {
   const P = S.point;
   const pl = S.success ? "R" : "P";
@@ -622,6 +656,7 @@ function resultTip(n, probs, extra = {}) {
     return lines;
   }
   const e = doc().events[n.id];
+  if (M.isHouse(e)) return [`${n.id} — ${M.dispName(e)}`, [t("side.state"), stateText(e)], sharedLine(n.id), extra.forced ? t("whatif.houseHint") : null];
   const lines = [`${n.id} — ${M.dispName(e)}`, [S.success ? t("probs.r") : "p", fmtP(probs[n.id] ?? e.prob, 6)]];
   if (extra.forced && extra.forced[n.id]) lines.push(t("whatif.state." + extra.forced[n.id]));
   if (P && P.importance && P.importance[n.id] && !extra.forced) {
@@ -654,7 +689,7 @@ function renderTreeTab() {
   top.replaceChildren();
   const P = S.point;
   const probs = { ...P.probabilities };
-  const scale = probScale(Object.values(probs));
+  const scale = scaleOf(probs);
   const lg = el("span", { class: "legendbox" }, top);
   legend(lg, scale, S.success ? t("tree.legendR") : t("tree.legendP"));
   el("span", { class: "hint", style: "flex:1" }, top, t("tree.hint"));
@@ -781,6 +816,7 @@ function renderImp() {
 
 // what-if --------------------------------------------------------------
 function cycleForced(id) {
+  if (!doc().events[id] || M.isHouse(doc().events[id])) return; // a switch set in the editor
   const cur = S.whatif.forced[id];
   if (!cur) S.whatif.forced[id] = "failed";
   else if (cur === "failed") S.whatif.forced[id] = "working";
@@ -816,7 +852,7 @@ function renderWhatIf() {
   if (Object.keys(forced).length) el("button", { type: "button", class: "btn ghost xs", onclick: () => { S.whatif.forced = {}; S.whatif.res = null; renderResults(); } }, pills, t("whatif.clear"));
   if (S.whatif.err) el("p", { class: "msg err" }, top, S.whatif.err);
   const probs = W ? W.probabilities : P.probabilities;
-  const scale = probScale([...Object.values(P.probabilities), ...(W ? Object.values(W.probabilities) : [])]);
+  const scale = scaleOf(P.probabilities, W ? W.probabilities : {});
   el("span", { class: "hint grow", style: "margin:0" }, pills, t("whatif.help"));
   const lgb = el("span", { class: "legendbox" }, pills);
   legend(lgb, scale, S.success ? t("tree.legendR") : t("tree.legendP"));
@@ -827,7 +863,7 @@ function renderWhatIf() {
   const sl = box.scrollLeft, st = box.scrollTop;
   renderTree(svg, doc(), { mode: "whatif", zoom: fitZoom(box, doc(), S.ui.zoomRes, "result"), probs, color: scale, forced, success: S.success,
     tip: (n) => resultTip(n, probs, { base: W ? W.base_probabilities : null, forced, hint: n.t === "leaf" ? t("whatif.clickHint") : null }),
-    onNode: (n) => { if (n.t === "leaf") cycleForced(n.id); } });
+    onNode: (n) => { if (n.t === "leaf") cycleForced(n.id); } }); // house events: set in the editor, not forced
   box.scrollLeft = sl; box.scrollTop = st;
 }
 
@@ -1090,7 +1126,7 @@ function wire() {
     const ef = parseNum($("allEf").value);
     if (!(ef >= 1)) { $("probMsg").className = "msg err"; $("probMsg").textContent = t("probs.badEf"); return; }
     pushHist();
-    for (const id of M.eventIds(doc())) { const e = doc().events[id]; if (!e.samples && e.prob > 0) e.dist = { dist: "lognormal", median: e.prob, ef }; }
+    for (const id of M.basicIds(doc())) { const e = doc().events[id]; if (!e.samples && e.prob > 0) e.dist = { dist: "lognormal", median: e.prob, ef }; }
     $("probMsg").className = "msg ok"; $("probMsg").textContent = t("probs.allDone", { ef: fmtNum(ef, 3) });
     changed();
   });
