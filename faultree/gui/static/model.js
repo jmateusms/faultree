@@ -17,10 +17,14 @@
 //            model {dist, ...params} from which prob is computed at the
 //            mission time (see refreshModels).
 // doc.meta   {note?, note_pt?, mission_time?, time_unit?} carried through load/save.
+// A PRIORITY AND gate (PAND) occurs when all its inputs occur, in order from
+// left to right, by the mission time. The engine quantifies it as an
+// independent module from the failure models of the events under it
+// (faultree.dynamic), and the gate enters the BDD as one variable.
 import { t, lang } from "./i18n.js";
 
-export const GATES = ["AND", "OR", "XOR", "K_OF_N", "INHIBIT"];
-export const CYCLE_GATES = ["AND", "OR", "XOR", "K_OF_N"]; // the ⇄ button; INHIBIT comes from the select
+export const GATES = ["AND", "OR", "XOR", "K_OF_N", "INHIBIT", "PAND"];
+export const CYCLE_GATES = ["AND", "OR", "XOR", "K_OF_N"]; // the ⇄ button; INHIBIT and PAND come from the select
 export const KINDS = ["basic", "undeveloped", "house", "conditioning"];
 export const isHouse = (e) => !!e && e.kind === "house";
 export const DISTS = {
@@ -45,6 +49,10 @@ export const MODELS = {
 };
 export const LIFETIME = ["exponential", "weibull", "normal", "lognormal", "gamma", "uniform"];
 export const COUNTS = ["binomial", "poisson"];
+// Under a PAND: models that give a failure time (binomial counts demands),
+// and coherent gates, so that an input stays failed once it fails.
+export const PAND_MODELS = [...LIFETIME, "poisson"];
+export const PAND_INNER = ["AND", "OR", "K_OF_N", "PAND"];
 export const TIME_PARAMS = new Set(["eta", "mu", "sigma", "tmed", "theta", "a", "b"]);
 export const DEFAULT_T = 1000;
 export const TIME_UNITS = ["h", "d", "y", "min", "cycles"];
@@ -150,6 +158,87 @@ export function cloneTargets(doc, parent) {
   const out = [];
   for (const id of gmap.keys()) if (id !== doc.root.id && !reachableGates(doc, id, gmap).has(parent.id)) out.push(id);
   return out;
+}
+
+// ------------------------------------------------------------- PAND ---
+// {events, gates} under node `n` (clones followed, house events left out),
+// not entering any occurrence of gate `stop` (as the engine's _events_under).
+function under(doc, n, gmap, stop = null) {
+  const events = new Set(), gs = new Set(), seen = new Set(), stack = [n];
+  while (stack.length) {
+    let x = stack.pop();
+    if (x.t === "ref") x = gmap.get(x.ref);
+    if (!x) continue;
+    if (x.t === "leaf") { if (!isHouse(doc.events[x.id])) events.add(x.id); continue; }
+    if (seen.has(x) || x.id === stop) continue;
+    seen.add(x);
+    gs.add(x.id);
+    stack.push(...x.children);
+  }
+  return { events, gates: gs };
+}
+const pandList = (gmap) => [...gmap.values()].filter((g) => g.gate === "PAND").reverse(); // inner ones first
+export function hasPand(doc) { let r = false; walk(doc.root, (n) => { if (n.t === "gate" && n.gate === "PAND") r = true; }); return r; }
+// id -> the nearest PAND gate, for every event and gate strictly inside one.
+export function pandMembers(doc, gmap = gates(doc)) {
+  const out = new Map();
+  for (const p of pandList(gmap)) {
+    for (const c of p.children) {
+      const u = under(doc, c, gmap);
+      for (const id of [...u.events, ...u.gates]) if (!out.has(id)) out.set(id, p.id);
+    }
+  }
+  return out;
+}
+// Variables of the main BDD, which what-if can force: basic events outside
+// PAND gates and the outermost PAND gates (the engine's basic_events).
+export function bddVars(doc) {
+  const gmap = gates(doc), inside = pandMembers(doc, gmap);
+  const out = new Set(basicIds(doc).filter((id) => !inside.has(id)));
+  for (const g of pandList(gmap)) if (!inside.has(g.id)) out.add(g.id);
+  return out;
+}
+// Events under PAND gate `g` without a failure model get an exponential one
+// at their current probability (a gate just made PAND, or a new input of
+// one). Returns their ids.
+export function ensureLifetimes(doc, g, success = false) {
+  const ids = [];
+  for (const id of under(doc, g, gates(doc)).events) {
+    const e = doc.events[id];
+    if (!e || e.kind === "conditioning" || e.model || e.samples) continue;
+    e.model = defaultModel("exponential", success ? 1 - e.prob : e.prob, missionTime(doc));
+    ids.push(id);
+  }
+  return ids;
+}
+function pandIssues(doc, gmap, out) {
+  const pands = pandList(gmap);
+  if (!pands.length) return;
+  const T = missionTime(doc);
+  if (!(fin(T) && T > 0) && !(hasModels(doc) && !validTime(T))) out.push(t("issue.pandTime")); // not twice with timeBad
+  const flagged = new Set();
+  const list = (s) => [...s].sort().join(", ");
+  for (const p of pands) {
+    if (p.children.length === 1) out.push(t("issue.pandInputs", { id: p.id }));
+    const parts = p.children.map((c) => { const u = under(doc, c, gmap); return new Set([...u.gates, ...u.events]); });
+    const inside = new Set(parts.flatMap((s) => [...s]));
+    for (const id of inside) {
+      if (flagged.has(id)) continue;
+      const g = gmap.get(id), e = doc.events[id];
+      if (g && !PAND_INNER.includes(g.gate)) out.push(t("issue.pandGate", { id: p.id, gate: id, type: t("gate.name." + g.gate) }));
+      else if (e && e.kind !== "conditioning" && !e.model) out.push(t("issue.pandModel", { id, gate: p.id }));
+      else if (e && e.model && !PAND_MODELS.includes(e.model.dist)) out.push(t("issue.pandCount", { id, gate: p.id }));
+      else continue;
+      flagged.add(id);
+    }
+    for (let i = 0; i < parts.length; i++) for (let j = i + 1; j < parts.length; j++) {
+      const both = [...parts[i]].filter((id) => parts[j].has(id));
+      if (both.length) out.push(t("issue.pandShared", { id: p.id, a: i + 1, b: j + 1, ids: list(both) }));
+    }
+    const o = under(doc, doc.root, gmap, p.id), outside = new Set([...o.gates, ...o.events]);
+    const both = [...inside].filter((id) => outside.has(id));
+    if (both.length) out.push(t("issue.pandOutside", { id: p.id, ids: list(both) }));
+  }
 }
 
 export function validDist(d) {
@@ -349,6 +438,7 @@ export function validate(doc) {
   for (const id of condBad) out.push(t("issue.condParent", { id }));
   for (const [id, k] of occurrences(doc)) if (k > 1 && doc.events[id] && doc.events[id].kind === "conditioning") out.push(t("issue.condTwice", { id }));
   if (hasModels(doc) && !validTime(missionTime(doc))) out.push(t("issue.timeBad"));
+  pandIssues(doc, gmap, out);
   for (const [id, e] of Object.entries(doc.events)) {
     if (!id) out.push(t("issue.eventNoId"));
     if (isHouse(e)) continue; // a switch: its state is all it needs
@@ -466,6 +556,7 @@ export function applyProbs(doc, probs) {
 // carry their state and never a prob.
 export function exportTree(doc, { engine = false } = {}) {
   const emitted = new Set();
+  const inPand = engine ? pandMembers(doc) : null; // the engine needs their models, and t
   function emit(n, isRoot) {
     if (n.t === "ref") return { ref: n.ref };
     if (n.t === "leaf") {
@@ -478,7 +569,7 @@ export function exportTree(doc, { engine = false } = {}) {
       o.gate = null;
       if (isHouse(e)) { o.state = e.state === true; o.children = []; return o; }
       o.prob = !engine && e.samples ? e.samples : e.prob;
-      if (!engine && e.model) o.failure_model = { ...e.model };
+      if (e.model && (!engine || inPand.has(n.id))) o.failure_model = { ...e.model };
       if (!engine && e.dist) o.uncertainty = { ...e.dist };
       o.children = [];
       return o;
@@ -488,7 +579,7 @@ export function exportTree(doc, { engine = false } = {}) {
     if (isRoot && !engine) {
       for (const k of ["note", "note_pt"]) if (doc.meta[k]) o[k] = doc.meta[k];
       if (hasModels(doc) || doc.meta.mission_time != null) { o.mission_time = missionTime(doc); o.time_unit = timeUnit(doc); }
-    }
+    } else if (isRoot && hasPand(doc)) o.mission_time = missionTime(doc);
     o.event_type = isRoot ? "top" : "intermediate";
     o.gate = n.gate;
     if (n.gate === "K_OF_N") o.k = n.k;
@@ -497,7 +588,8 @@ export function exportTree(doc, { engine = false } = {}) {
   }
   return emit(doc.root, true);
 }
-// Flat faultree JSON (ft_nodes / be_nodes); the unique unreferenced gate is the root.
+// Flat faultree JSON (ft_nodes / be_nodes); the unique unreferenced gate is
+// the root. Failure models and the mission time go along (PAND needs them).
 export function exportFlat(doc) {
   const ft = [], seen = new Set();
   walk(doc.root, (n) => {
@@ -512,7 +604,10 @@ export function exportFlat(doc) {
     const e = doc.events[id], o = { label: id };
     if (e.kind !== "basic") o.event_type = e.kind;
     if (isHouse(e)) o.state = e.state === true; else o.prob = e.samples || e.prob;
+    if (e.model && !isHouse(e)) o.failure_model = { ...e.model };
     return o;
   });
-  return { ft_nodes: ft, be_nodes: be };
+  const out = { ft_nodes: ft, be_nodes: be };
+  if (hasModels(doc) || doc.meta.mission_time != null) { out.mission_time = missionTime(doc); out.time_unit = timeUnit(doc); }
+  return out;
 }

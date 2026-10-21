@@ -1,0 +1,80 @@
+{
+  "id": "TOP",
+  "name": "Unit damaged by overheating or short circuit",
+  "name_pt": "Unidade danificada por superaquecimento ou curto-circuito",
+  "note": "Illustrative PRIORITY AND model: the unit overheats only if the thermal cutoff fails (a latent failure) before the cooling fan stops. If the fan stops first, the working cutoff shuts the unit down safely. The PAND inputs share no events with the rest of the tree, so faultree quantifies the gate exactly from the failure-time models over the mission time of one year (8760 h). The parameters are illustrative.",
+  "note_pt": "Modelo ilustrativo de E PRIORITÁRIO: a unidade superaquece só se o corte térmico falhar (falha latente) antes de o ventilador parar. Se o ventilador parar primeiro, o corte térmico, funcionando, desliga a unidade com segurança. As entradas do PAND não compartilham eventos com o resto da árvore, então o faultree quantifica a porta de forma exata a partir dos modelos de tempo até a falha, no tempo de missão de um ano (8760 h). Os parâmetros são ilustrativos.",
+  "event_type": "top",
+  "gate": "OR",
+  "mission_time": 8760.0,
+  "time_unit": "h",
+  "children": [
+    {
+      "id": "OVERHEAT",
+      "name": "Overheating: cutoff failed before the fan stopped",
+      "name_pt": "Superaquecimento: corte térmico falhou antes de o ventilador parar",
+      "event_type": "intermediate",
+      "gate": "PAND",
+      "children": [
+        {
+          "id": "CUTOFF",
+          "name": "Thermal cutoff fails stuck closed (latent)",
+          "name_pt": "Corte térmico falha travado fechado (latente)",
+          "event_type": "basic",
+          "gate": null,
+          "prob": 0.1607108538,
+          "failure_model": {
+            "dist": "exponential",
+            "lambda": 2e-05
+          },
+          "children": []
+        },
+        {
+          "id": "FAN",
+          "name": "Cooling fan stops",
+          "name_pt": "Ventilador para",
+          "event_type": "intermediate",
+          "gate": "OR",
+          "children": [
+            {
+              "id": "FAN_MOTOR",
+              "name": "Fan motor fails",
+              "name_pt": "Motor do ventilador falha",
+              "event_type": "basic",
+              "gate": null,
+              "prob": 0.1459692776,
+              "failure_model": {
+                "dist": "weibull",
+                "beta": 1.5,
+                "eta": 30000.0
+              },
+              "children": []
+            },
+            {
+              "id": "FAN_SUPPLY",
+              "name": "Fan power supply fails",
+              "name_pt": "Fonte do ventilador falha",
+              "event_type": "basic",
+              "gate": null,
+              "prob": 0.0838727457,
+              "failure_model": {
+                "dist": "exponential",
+                "lambda": 1e-05
+              },
+              "children": []
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "SHORT",
+      "name": "Internal short circuit",
+      "name_pt": "Curto-circuito interno",
+      "event_type": "basic",
+      "gate": null,
+      "prob": 0.0001,
+      "children": []
+    }
+  ]
+}

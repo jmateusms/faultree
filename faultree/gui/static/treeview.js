@@ -5,8 +5,9 @@
 // events and triangles for gate clones (faultree refs). NUREG-0492 symbols:
 // a hexagon for the INHIBIT gate, a house for house events (their state
 // below instead of a probability) and a horizontal ellipse for conditioning
-// events, drawn as an input of their INHIBIT gate. Shared events and cloned
-// gates carry a marker (see settings.js) in a colour of their own.
+// events, drawn as an input of their INHIBIT gate. A PRIORITY AND gate is the
+// AND shape with an arrow (inputs in order from left to right). Shared events
+// and cloned gates carry a marker (see settings.js) in a colour of their own.
 import { svgEl, svgText, trunc, fmtP, C, FONT, bindTip, isDark, sharedColor } from "./util.js";
 import { t } from "./i18n.js";
 import { walk, sharedMarks, dispName } from "./model.js";
@@ -50,13 +51,14 @@ function gateSymbol(g, x, ys, n, stroke, fill) {
     svgEl("path", { d: `M${x},${ys} L${x + w},${ys + 7.5} L${x + w},${yb - 7.5} L${x},${yb} L${x - w},${yb - 7.5} L${x - w},${ys + 7.5} Z`, fill, stroke, "stroke-width": 1.5 }, g);
     return yb;
   }
-  if (n.gate === "AND") d = `M${x - h},${yb} L${x - h},${ys + h} A${h},${h} 0 0 1 ${x + h},${ys + h} L${x + h},${yb} Z`;
+  const and = n.gate === "AND" || n.gate === "PAND";
+  if (and) d = `M${x - h},${yb} L${x - h},${ys + h} A${h},${h} 0 0 1 ${x + h},${ys + h} L${x + h},${yb} Z`;
   else d = `M${x - h},${yb} Q${x},${yb - 9} ${x + h},${yb} Q${x + h - 2},${ys + 12} ${x},${ys} Q${x - h + 2},${ys + 12} ${x - h},${yb} Z`;
   svgEl("path", { d, fill, stroke, "stroke-width": 1.5 }, g);
-  let bottom = yb - (n.gate === "AND" ? 0 : 4);
+  let bottom = yb - (and ? 0 : 4);
   if (n.gate === "XOR") { svgEl("path", { d: `M${x - h},${yb + 5} Q${x},${yb - 4} ${x + h},${yb + 5}`, fill: "none", stroke, "stroke-width": 1.5 }, g); bottom = yb + 1; }
-  const lab = { AND: "·", OR: "+", XOR: "=1", K_OF_N: `${n.k}/${n.children.length}` }[n.gate];
-  svgText(g, x, yb - (n.gate === "AND" ? 7 : 9), lab, { "text-anchor": "middle", "font-size": n.gate === "AND" ? 16 : n.gate === "OR" ? 12 : 10, "font-weight": 700 });
+  const lab = { AND: "·", OR: "+", XOR: "=1", K_OF_N: `${n.k}/${n.children.length}`, PAND: "→" }[n.gate];
+  svgText(g, x, yb - (n.gate === "AND" ? 7 : n.gate === "PAND" ? 6 : 9), lab, { "text-anchor": "middle", "font-size": n.gate === "AND" ? 16 : n.gate === "OR" || n.gate === "PAND" ? 12 : 10, "font-weight": 700 });
   return bottom;
 }
 export function gateDesc(g) { return t("gate.desc." + g); }
@@ -133,17 +135,23 @@ export function renderTree(svg, doc, opts = {}) {
       }
     }
     const p = probs ? probs[key] : undefined;
-    const fill = color && p != null ? color(p) : C.card;
-    const txt = isDark(fill) ? "#FFFFFF" : C.ink;
+    let fill = color && p != null ? color(p) : C.card;
+    let txt = isDark(fill) ? "#FFFFFF" : C.ink;
+    // A forced gate or clone (a PAND gate in what-if) is drawn like a forced event.
+    const gState = n.t !== "leaf" ? forced[key] : null;
+    const gStroke = gState === "failed" ? C.wine : gState === "working" ? C.accent : null;
+    if (gState) { fill = gState === "failed" ? C.s3 : C.s1; txt = "#FFFFFF"; }
+    const gHot = n.t !== "leaf" && hl && hl.has(key);
     if (n.t === "gate") {
       const bw = 128, bh = 56, bx = it.x - bw / 2, by = it.y;
       svgEl("rect", { class: "focusRing", x: bx - 4, y: by - 4, width: bw + 8, height: bh + 42, rx: 6, fill: "none", stroke: "none" }, g);
+      if (gHot) svgEl("rect", { x: bx - 7, y: by - 7, width: bw + 14, height: bh + 14, rx: 8, fill: "none", stroke: C.s2, "stroke-width": 4 }, g);
       if (mk) twinRing("rect", { x: bx - 5, y: by - 5, width: bw + 10, height: bh + 10, rx: 7 }, mc, g);
       svgEl("rect", { x: bx, y: by, width: bw, height: bh, rx: 3, fill,
-        stroke: sel ? C.accent : mc || C.ink, "stroke-width": sel ? 2.6 : mk ? msw : it.depth === 0 ? 2.2 : 1.2 }, g);
+        stroke: sel ? C.accent : gStroke || mc || C.ink, "stroke-width": sel ? 2.6 : gState ? 2.4 : mk ? msw : it.depth === 0 ? 2.2 : 1.2 }, g);
       const lines = wrap2(dispName(n) || n.id, 20);
       lines.forEach((ln, i) => svgText(g, it.x, by + (lines.length > 1 ? 15 + i * 14 : 21), ln, { "text-anchor": "middle", "font-size": 11, "font-weight": 600, fill: txt }));
-      const pTxt = p != null ? `${pLabel} = ${fmtP(p, 3)}` : "";
+      const pTxt = gState ? t("whatif." + gState) : p != null ? `${pLabel} = ${fmtP(p, 3)}` : "";
       svgText(g, it.x, by + 47, trunc(n.id, pTxt ? 7 : 16) + (pTxt ? " · " + pTxt : ""), { "text-anchor": "middle", "font-size": 11, class: "mono", fill: txt });
       svgEl("line", { x1: it.x, y1: by + bh, x2: it.x, y2: by + bh + 6, stroke: C.ink, "stroke-width": 1.5 }, g);
       const bottom = gateSymbol(g, it.x, by + bh + 6, n, C.ink, C.card);
@@ -156,11 +164,14 @@ export function renderTree(svg, doc, opts = {}) {
     } else if (n.t === "ref") {
       const cx = it.x, top = it.y + 2, h = 46, w = 54;
       svgEl("rect", { class: "focusRing", x: cx - 50, y: it.y - 3, width: 100, height: 92, rx: 6, fill: "none", stroke: "none" }, g);
-      if (mk) twinRing("path", { d: `M${cx},${top - 9} L${cx + w / 2 + 8},${top + h + 5} L${cx - w / 2 - 8},${top + h + 5} Z`, "stroke-linejoin": "round" }, mc, g);
-      svgEl("path", { d: `M${cx},${top} L${cx + w / 2},${top + h} L${cx - w / 2},${top + h} Z`, fill, stroke: sel ? C.accent : mc || C.ink, "stroke-width": sel ? 2.6 : mk ? msw : 1.4, "stroke-linejoin": "round" }, g);
+      const halo = (pad) => `M${cx},${top - pad - 1} L${cx + w / 2 + pad},${top + h + pad / 2 + 1} L${cx - w / 2 - pad},${top + h + pad / 2 + 1} Z`;
+      if (gHot) svgEl("path", { d: halo(10), fill: "none", stroke: C.s2, "stroke-width": 4, "stroke-linejoin": "round" }, g);
+      if (mk) twinRing("path", { d: halo(8), "stroke-linejoin": "round" }, mc, g);
+      svgEl("path", { d: `M${cx},${top} L${cx + w / 2},${top + h} L${cx - w / 2},${top + h} Z`, fill, stroke: sel ? C.accent : gStroke || mc || C.ink, "stroke-width": sel ? 2.6 : gState ? 2.4 : mk ? msw : 1.4, "stroke-linejoin": "round" }, g);
       svgText(g, cx, top + h - 9, trunc(n.ref, 7), { "text-anchor": "middle", "font-size": 11, "font-weight": 700, class: "mono", fill: txt });
       svgText(g, cx, top + h + 15, t("tree.clone"), { "text-anchor": "middle", "font-size": 11, fill: C.muted });
-      if (p != null) svgText(g, cx, top + h + 29, `${pLabel} = ${fmtP(p, 3)}`, { "text-anchor": "middle", "font-size": 11, class: "mono", fill: "#4A4A46" });
+      if (gState) svgText(g, cx, top + h + 29, t("whatif." + gState), { "text-anchor": "middle", "font-size": 11, "font-weight": 700, fill: gStroke });
+      else if (p != null) svgText(g, cx, top + h + 29, `${pLabel} = ${fmtP(p, 3)}`, { "text-anchor": "middle", "font-size": 11, class: "mono", fill: "#4A4A46" });
       if (mk) markBadge(g, cx + w / 2 + 2, top + 10, mk, mc, style);
     } else {
       const e = doc.events[n.id] || { name: n.id, prob: NaN, kind: "basic" };

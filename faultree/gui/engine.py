@@ -24,6 +24,7 @@ from ..builder import (
     _is_house,
     _is_leaf,
     analyze,
+    pand_probabilities,
     collect_basic_events,
     compile_tree,
     gather_nodes,
@@ -294,6 +295,9 @@ def analyze_point(tree: Any, *, success_mode: bool = False, max_order: int = 6,
     result = analyze(tree, None, success_mode=success_mode)
     top_id = str(tree["id"])
     inputs = {eid: float(p) for eid, p in var_probs_from_tree(tree).items()}
+    # A PAND gate is one BDD variable whose value comes from its module.
+    for gate_id, value in pand_probabilities(tree).gates.items():
+        inputs[gate_id] = 1.0 - value if success_mode else value
     q = float(result["Q"])
     compiled = compile_tree(tree, success_mode=success_mode, include_expressions=False)
     out = {

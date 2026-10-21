@@ -6,7 +6,8 @@ A Python tool for Fault Tree Analysis (FTA) using Ordered Binary Decision Diagra
 
 ## Overview
 - Converts a Fault Tree (FTA) JSON into an Ordered BDD using the `dd` package.
-- Supports logic gates: AND, OR, XOR (exactly-one), K-of-N and INHIBIT, and
+- Supports logic gates: AND, OR, XOR (exactly-one), K-of-N, INHIBIT and
+  PRIORITY AND (from failure-time models, for independent modules), and
   the NUREG-0492 primary events: basic, undeveloped, house and conditioning.
 - Exact top-event and intermediate-event probabilities in O(|BDD|) time
   (memoized Shannon cofactor recursion) — repeated/shared events are handled
@@ -39,7 +40,8 @@ follows the browser's language, and the PT/EN switch changes it.
 The model is on the left:
 
 - **Tree**: the editor. Select a node to add basic events or gates, change
-  the gate (AND, OR, XOR = exactly one, k-out-of-n, INHIBIT), set an event's
+  the gate (AND, OR, XOR = exactly one, k-out-of-n, INHIBIT, PRIORITY AND),
+  set an event's
   kind (basic, undeveloped, house = a true/false switch, conditioning = the
   condition of an INHIBIT gate), share a basic event
   between branches, or add a clone of a gate (faultree's `ref`); undo and
@@ -129,14 +131,18 @@ pip install -e ".[server,test]"
   - `name` (string): Descriptive name.
   - `event_type`: `top`, `intermediate`, `basic`, `undeveloped`, `house` or
     `conditioning`.
-  - `gate`: `AND`, `OR`, `XOR`, `K_OF_N`, `INHIBIT`, or `null`/`BASIC` for
-    leaves.
+  - `gate`: `AND`, `OR`, `XOR`, `K_OF_N`, `INHIBIT`, `PAND`, or `null`/`BASIC`
+    for leaves.
   - `children` (list): Child nodes.
   - `k` (int): Required for `K_OF_N` gates (`0 <= k <= n`).
   - `prob` (finite float or non-empty list of finite floats): Probability for
     basic, undeveloped and conditioning events. A list is treated as a
     one-dimensional sample vector and propagated elementwise.
   - `state` (bool): Required for `house` events, which take no `prob`.
+  - `failure_model` (object): Time-to-failure model, e.g.
+    `{"dist": "weibull", "beta": 1.5, "eta": 30000}`. Required for events
+    under a `PAND` gate; elsewhere the engine reads `prob`.
+  - `mission_time` (number, top event): Required when the tree has a `PAND`.
   - `ref` (string): ID of another node to clone/reference.
   - `prob_file` (string, optional, top level): CSV/Excel file with one column
     per basic-event id, resolved relative to the tree JSON.
@@ -164,9 +170,31 @@ The other symbols of the NRC Fault Tree Handbook (NUREG-0492):
 - **Transfer** in/out symbols are a drawing convention; `ref` gives the
   same sharing within one file.
 
-`examples/nureg_symbols.json` uses all of them. The PRIORITY AND gate
-depends on the order of the input failures, which a static (Boolean) model
-cannot express; see the backlog.
+`examples/nureg_symbols.json` uses all of them.
+
+A **PRIORITY AND** gate (`PAND`) occurs when all its inputs occur by the
+mission time, in order from left to right. A Boolean variable says whether
+an event occurred, not when, so faultree quantifies each PAND as an
+independent module and puts it into the BDD as one variable:
+
+- Every event under the gate needs a time-to-failure `failure_model`
+  (exponential, weibull, normal, lognormal, gamma, uniform, or poisson for
+  the time of the k-th failure), and the top event a `mission_time`. House
+  events are allowed; inside the gate only AND, OR, K_OF_N and PAND gates are.
+- The inputs share no events with each other, and no event under the gate
+  appears elsewhere in the tree. The gate itself may be shared by `ref`.
+- Each input's failure-time CDF F_i(s) comes from its model, or for a
+  subtree from its BDD evaluated on a time grid. Then G_1 = F_1 and
+  G_k(s) = ∫₀ˢ G_{k-1}(u) dF_k(u) (trapezoidal Stieltjes sums, Richardson
+  extrapolation), and P(PAND) = G_n(mission_time).
+- `analyze(..., pand_steps=4096)` sets the grid; `assumptions["pand"]`
+  reports each gate's value and an error estimate. The PAND id is the event
+  in cut sets, importance and what-if; events inside it get their
+  probability at the mission time. Expressions show `PAND(A, B)`.
+
+`examples/priority_and.json` uses it. Standby and spare structures, where
+the same component appears inside and outside the ordered gate, are not
+independent modules and are rejected.
 
 Every basic event must have a probability (from the tree, `--probs`, or a
 probability file); a missing probability is an error unless
@@ -250,8 +278,9 @@ curl -X POST http://localhost:8000/analyze \
 ```
 
 ## Features
-- **Logic Gates**: AND, OR, XOR (exactly one), K-of-N (at least k), INHIBIT;
-  house (switch) and conditioning events.
+- **Logic Gates**: AND, OR, XOR (exactly one), K-of-N (at least k), INHIBIT,
+  PRIORITY AND (independent modules, from failure-time models); house
+  (switch) and conditioning events.
 - **Exact quantification**: weighted model counting via the BDD cofactor
   recursion — linear in BDD size, exact for repeated/shared events.
 - **Importance measures** (`analyze()`, `--structured`; fault-tree mode):
@@ -299,9 +328,9 @@ XOR duality, cycle detection, input validation, server behavior).
   percentile bounds (replacing per-event resampling).
 - **Common-Cause Failure**: beta-factor / MGL / alpha-factor groups.
 - **Transfer Symbols**: Split trees across multiple files (`transfer_in`).
-- **Dynamic gates**: PRIORITY AND (NUREG-0492) and the spare, sequence and
-  functional-dependency gates, quantified from failure-time models for
-  independent modules and substituted into the static BDD.
+- **Dynamic gates**: spare, sequence and functional-dependency gates, and
+  PRIORITY AND gates that share events with the rest of the tree (Markov or
+  sequence-BDD methods); uncertainty on failure-model parameters.
 - **Open-PSA MEF**: import/export for ecosystem interoperability.
 - **Frontend**: the local GUI (`faultree gui`) covers editing, exact results,
   cut sets, importance, what-if and uncertainty. Next: navigation of large
@@ -320,7 +349,8 @@ XOR duality, cycle detection, input validation, server behavior).
 
 `minimal_cut_sets(tree, max_order=6, max_candidates=10000, max_sets=1000,
 max_basic_events=32)` returns positive minimal cuts for AND/OR/K_OF_N/INHIBIT
-models (house events are constants and never appear in a cut).
+models (house events are constants and never appear in a cut; a PAND gate
+appears as one event).
 Always inspect `complete`, `truncated` and `reason`; an incomplete list is not
 an exhaustive reliability result. XOR needs signed implicants and is rejected.
 Limits apply to enumeration, not a hard wall-clock or BDD-memory budget.

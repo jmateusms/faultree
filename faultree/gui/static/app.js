@@ -67,7 +67,8 @@ function changed(opts = {}) {
   M.refreshModels(doc(), S.success);
   S.version++;
   S.issues = M.validate(doc());
-  for (const id of Object.keys(S.whatif.forced)) if (!doc().events[id] || M.isHouse(doc().events[id])) delete S.whatif.forced[id];
+  const vars = M.bddVars(doc());
+  for (const id of Object.keys(S.whatif.forced)) if (!vars.has(id)) delete S.whatif.forced[id];
   if (S.selUid != null && !M.findUid(doc(), S.selUid)) S.selUid = null;
   $("btnUndo").disabled = !S.hist.past.length;
   $("btnRedo").disabled = !S.hist.future.length;
@@ -150,7 +151,9 @@ async function runWhatIf() {
 }
 function uncInputs() {
   const distributions = {}, samples = {};
+  const inPand = M.pandMembers(doc());
   for (const id of M.basicIds(doc())) {
+    if (inPand.has(id)) continue; // the PAND gate keeps its point value
     const e = doc().events[id];
     if (e.dist) distributions[id] = e.dist;
     else if (e.samples) samples[id] = e.samples;
@@ -199,14 +202,18 @@ function editTip(n) {
   if (n.t === "ref") return [t("tree.cloneOf", { id: n.ref }), nameOf(n.ref), sharedLine(n.ref)];
   if (n.t === "gate") {
     const p = pFresh() ? S.point.probabilities[n.id] : null;
-    return [`${n.id} — ${M.dispName(n)}`, gateDesc(n.gate), p != null ? [S.success ? "R" : "P", fmtP(p, 6)] : null, sharedLine(n.id)];
+    return [`${n.id} — ${M.dispName(n)}`, gateDesc(n.gate), p != null ? [S.success ? "R" : "P", fmtP(p, 6)] : null, pandErrLine(n.id), sharedLine(n.id)];
   }
   const e = doc().events[n.id];
   if (M.isHouse(e)) return [`${n.id} — ${M.dispName(e)}`, [t("side.state"), stateText(e)], t("side.houseHelp"), sharedLine(n.id)];
+  const pand = M.pandMembers(doc()).get(n.id);
   return [`${n.id} — ${M.dispName(e)}`, [S.success ? t("probs.r") : "p", fmtP(e.prob, 6)],
     e.model ? [t("model.label"), modelText(e.model)] : null,
-    e.dist ? [t("probs.dist"), distText(e.dist)] : null, sharedLine(n.id)];
+    e.dist && !pand ? [t("probs.dist"), distText(e.dist)] : null, pand ? t("pand.inside", { id: pand }) : null, sharedLine(n.id)];
 }
+// The numerical error estimate of a PAND gate's value, from the last analysis.
+const pandErr = (id) => (pFresh() && S.point.assumptions?.pand?.[id] ? S.point.assumptions.pand[id].abs_error_estimate : null);
+const pandErrLine = (id) => (pandErr(id) != null ? [t("pand.err"), "± " + fmtP(pandErr(id), 2)] : null);
 const stateText = (e) => (e.state === true ? t("side.stateTrue") : t("side.stateFalse"));
 // "Shared event (A): appears 2 times", for tooltips.
 function sharedLine(key) {
@@ -241,8 +248,11 @@ function nodeAction(act, uid) {
   if (!f) return;
   const n = f.n;
   pushHist();
-  if (act === "addEvent") { const c = M.newEvent(doc()); n.children.push(c); S.selUid = c.uid; }
-  else if (act === "addGate") { const c = M.newGate(doc()); n.children.push(c); S.selUid = c.uid; }
+  if (act === "addEvent" || act === "addGate") {
+    const c = act === "addEvent" ? M.newEvent(doc()) : M.newGate(doc());
+    n.children.push(c); S.selUid = c.uid;
+    if (n.gate === "PAND" || M.pandMembers(doc()).has(n.id)) M.ensureLifetimes(doc(), n, S.success);
+  }
   else if (act === "cycle") {
     if (n.t === "gate") { n.gate = M.CYCLE_GATES[(M.CYCLE_GATES.indexOf(n.gate) + 1) % M.CYCLE_GATES.length]; if (n.gate === "K_OF_N") n.k = Math.min(Math.max(1, n.k || 2), Math.max(1, n.children.length)); }
     else if (n.t === "leaf") { const e = doc().events[n.id]; if (e.kind === "basic" || e.kind === "undeveloped") M.setKind(e, e.kind === "basic" ? "undeveloped" : "basic"); }
@@ -271,7 +281,7 @@ function renderSide() {
       <p class="hint" style="margin-top:-4px">${esc(gateDesc(n.gate))}</p>
       <div class="row2"><label class="field"><span>Id</span><input type="text" id="fId" value="${esc(n.id)}" spellcheck="false"></label>
       <label class="field"><span>${esc(t("side.name"))}</span><input type="text" id="fName" value="${esc(M.dispName(n))}" style="font-family:var(--sans)"></label></div>
-      <p class="mono" style="margin:0 0 6px">${S.success ? "R" : "P"} = ${p != null ? esc(fmtP(p, 6)) : "—"}</p>
+      <p class="mono" style="margin:0 0 6px">${S.success ? "R" : "P"} = ${p != null ? esc(fmtP(p, 6)) : "—"}${pandErr(n.id) != null ? ` <span class="hint" title="${esc(t("pand.err"))}">± ${esc(fmtP(pandErr(n.id), 2))}</span>` : ""}</p>
       <div class="btnrow"><button type="button" class="btn ghost sm" data-side="addEvent">+ ${esc(t("side.addEvent"))}</button><button type="button" class="btn ghost sm" data-side="addGate">+ ${esc(t("side.addGate"))}</button></div>
       ${evOpts ? `<div class="btnrow"><select id="fExisting" aria-label="${esc(t("side.existing"))}" style="flex:1;min-width:0">${evOpts}</select><button type="button" class="btn ghost sm" data-side="addExisting">+ ${esc(t("side.shared"))}</button></div>` : ""}
       ${clones ? `<div class="btnrow"><select id="fClone" aria-label="${esc(t("side.cloneOf"))}" style="flex:1;min-width:0">${clones}</select><button type="button" class="btn ghost sm" data-side="addClone">+ ${esc(t("side.clone"))}</button></div>` : ""}
@@ -292,7 +302,11 @@ function renderSide() {
     // event a probability without a failure model.
     const first = e.kind === "house" ? `<label class="field"><span>${esc(t("side.state"))}</span><select id="fState"></select></label>`
       : e.kind === "conditioning" ? "" : `<label class="field"><span>${esc(t("model.label"))}</span><select id="fModelSel"></select></label>`;
+    // An event under a PAND gate: its failure model gives its failure time,
+    // and it takes no uncertainty distribution (the gate keeps its point value).
+    const pand = e.kind === "house" ? null : M.pandMembers(doc()).get(n.id);
     const probs = e.kind === "house" ? `<p class="hint">${esc(t("side.houseHelp"))}</p>`
+      : pand ? `<p class="hint">${esc(t("pand.inside", { id: pand }))} ${esc(t("pand.noDist"))}</p>`
       : `${e.kind === "conditioning" ? `<p class="hint">${esc(t("side.condHelp"))}</p>` : ""}<p class="hint">${esc(t("probs.dist"))}: ${esc(e.dist ? distText(e.dist) : e.samples ? t("probs.samples", { n: e.samples.length }) : "—")} · <a href="#" data-side="toProbs">${esc(t("side.editProbs"))}</a></p>`;
     box.innerHTML = `<h3>${esc(title)}</h3>
       <div class="row2"><label class="field"><span>Id</span><input type="text" id="fId" value="${esc(n.id)}" spellcheck="false"></label>
@@ -408,6 +422,7 @@ function bindSide(n, f) {
       const old = n.id;
       n.id = v;
       M.walk(doc().root, (x) => { if (x.t === "ref" && x.ref === old) x.ref = v; });
+      if (S.whatif.forced[old]) { S.whatif.forced[v] = S.whatif.forced[old]; delete S.whatif.forced[old]; } // a PAND gate
       changed();
     } else if (doc().events[v]) {
       pushHist(); n.id = v; changed();
@@ -431,6 +446,7 @@ function bindSide(n, f) {
       pushHist(); n.gate = ev.target.value;
       if (n.gate === "K_OF_N") n.k = Math.min(Math.max(1, n.k || 2), Math.max(1, n.children.length));
       M.ensureCondition(doc(), n); // INHIBIT: input + a new conditioning event
+      if (n.gate === "PAND") M.ensureLifetimes(doc(), n, S.success); // PAND: time-to-failure models
       changed();
     });
     $("fK").addEventListener("input", (ev) => { const k = Number(ev.target.value); if (!Number.isInteger(k)) return; pushHist("k" + n.uid); n.k = k; changed({ side: false }); });
@@ -476,6 +492,7 @@ function renderEvents() {
   const head = `<thead><tr><th>${esc(t("probs.event"))}</th><th>${esc(S.success ? t("probs.r") : t("probs.p"))}</th><th>${esc(t("probs.dist"))}</th><th>${esc(t("probs.params"))}</th><th class="num">${esc(t("probs.mean"))}</th></tr></thead>`;
   table.innerHTML = head + "<tbody></tbody>";
   const tb = table.tBodies[0];
+  const inPand = M.pandMembers(doc());
   for (const id of M.eventIds(doc())) {
     const e = doc().events[id];
     const tr = el("tr", {}, tb);
@@ -504,6 +521,7 @@ function renderEvents() {
         pushHist("p" + id); e.prob = p; changed({ events: false });
       });
     }
+    if (inPand.has(id) && !e.samples) { el("td", { class: "hint", colspan: 3 }, tr, t("pand.noDistShort", { id: inPand.get(id) })); continue; }
     const td2 = el("td", {}, tr);
     if (e.samples) {
       el("span", { class: "hint" }, td2, t("probs.samples", { n: e.samples.length }) + " ");
@@ -643,30 +661,38 @@ function card(host, title, exportName) {
 // tree with probabilities ------------------------------------------------
 // Colour scale of the drawn values, without house events (constants 0 or 1).
 const scaleOf = (...maps) => probScale(maps.flatMap((m) => Object.entries(m).filter(([id]) => !M.isHouse(doc().events[id])).map(([, v]) => v)));
+// Tooltip of a result tree node; extra: {base, forced, hint} in what-if. A
+// PAND gate is a BDD variable: forced state and importance like an event.
 function resultTip(n, probs, extra = {}) {
-  const P = S.point;
   const pl = S.success ? "R" : "P";
-  if (n.t === "ref") return [t("tree.cloneOf", { id: n.ref }), nameOf(n.ref), [pl, fmtP(probs[n.ref], 6)], sharedLine(n.ref)];
-  if (n.t === "gate") {
-    const lines = [`${n.id} — ${M.dispName(n)}`, gateDesc(n.gate), [pl, fmtP(probs[n.id], 6)]];
-    if (extra.base) lines.push([t("whatif.baseShort"), fmtP(extra.base[n.id], 6)]);
+  if (n.t !== "leaf") {
+    const id = n.t === "ref" ? n.ref : n.id;
+    const lines = n.t === "ref" ? [t("tree.cloneOf", { id }), nameOf(id)] : [`${id} — ${M.dispName(n)}`, gateDesc(n.gate)];
+    lines.push([pl, fmtP(probs[id], 6)]);
+    if (extra.base) lines.push([t("whatif.baseShort"), fmtP(extra.base[id], 6)]);
     const U = S.unc.res;
-    if (!extra.base && U && S.unc.ver === S.version && U.probabilities[n.id]) lines.push(["p5 – p95", `${fmtP(U.probabilities[n.id].p05, 3)} – ${fmtP(U.probabilities[n.id].p95, 3)}`]);
-    lines.push(sharedLine(n.id));
+    if (!extra.base && U && S.unc.ver === S.version && U.probabilities[id]) lines.push(["p5 – p95", `${fmtP(U.probabilities[id].p05, 3)} – ${fmtP(U.probabilities[id].p95, 3)}`]);
+    lines.push(...varLines(id, extra), pandErrLine(id), sharedLine(id), extra.hint);
     return lines;
   }
   const e = doc().events[n.id];
   if (M.isHouse(e)) return [`${n.id} — ${M.dispName(e)}`, [t("side.state"), stateText(e)], sharedLine(n.id), extra.forced ? t("whatif.houseHint") : null];
-  const lines = [`${n.id} — ${M.dispName(e)}`, [S.success ? t("probs.r") : "p", fmtP(probs[n.id] ?? e.prob, 6)]];
-  if (extra.forced && extra.forced[n.id]) lines.push(t("whatif.state." + extra.forced[n.id]));
-  if (P && P.importance && P.importance[n.id] && !extra.forced) {
-    const I = P.importance[n.id];
-    lines.push([t("imp.birnbaum"), fmtNum(I.birnbaum, 4)], [t("imp.criticality"), fmtPct(I.criticality)], ["RAW", fmtNum(I.raw, 4)], ["RRW", fmtNum(I.rrw, 4)]);
-  } else if (P && P.birnbaum && P.birnbaum[n.id] != null && !extra.forced) lines.push([t("imp.birnbaum"), fmtNum(P.birnbaum[n.id], 4)]);
+  const lines = [`${n.id} — ${M.dispName(e)}`, [S.success ? t("probs.r") : "p", fmtP(probs[n.id] ?? e.prob, 6)], ...varLines(n.id, extra)];
   if (e.model && !extra.forced) lines.push(modelAt(e));
-  lines.push(sharedLine(n.id));
-  if (extra.hint) lines.push(extra.hint);
+  const pand = M.pandMembers(doc()).get(n.id);
+  if (pand && !extra.forced) lines.push(t("pand.inside", { id: pand }));
+  lines.push(sharedLine(n.id), extra.hint);
   return lines;
+}
+// Forced state or importance of a BDD variable (an event or a PAND gate).
+function varLines(id, extra) {
+  const P = S.point;
+  if (extra.forced) return extra.forced[id] ? [t("whatif.state." + extra.forced[id])] : [];
+  if (P && P.importance && P.importance[id]) {
+    const I = P.importance[id];
+    return [[t("imp.birnbaum"), fmtNum(I.birnbaum, 4)], [t("imp.criticality"), fmtPct(I.criticality)], ["RAW", fmtNum(I.raw, 4)], ["RRW", fmtNum(I.rrw, 4)]];
+  }
+  return P && P.birnbaum && P.birnbaum[id] != null ? [[t("imp.birnbaum"), fmtNum(P.birnbaum[id], 4)]] : [];
 }
 function treeCanvas(host, id) {
   let box = host.querySelector(".canvasBox");
@@ -816,7 +842,7 @@ function renderImp() {
 
 // what-if --------------------------------------------------------------
 function cycleForced(id) {
-  if (!doc().events[id] || M.isHouse(doc().events[id])) return; // a switch set in the editor
+  if (!M.bddVars(doc()).has(id)) return; // house events: switches set in the editor; events inside a PAND gate
   const cur = S.whatif.forced[id];
   if (!cur) S.whatif.forced[id] = "failed";
   else if (cur === "failed") S.whatif.forced[id] = "working";
@@ -861,9 +887,12 @@ function renderWhatIf() {
   const svg = box.querySelector("svg");
   exportButtons(lgb, () => svg, () => `${fileStem()}-what-if`);
   const sl = box.scrollLeft, st = box.scrollTop;
+  const vars = M.bddVars(doc()), inPand = M.pandMembers(doc());
+  const keyOf = (n) => (n.t === "ref" ? n.ref : n.id);
+  const hint = (n) => (vars.has(keyOf(n)) ? t("whatif.clickHint") : inPand.has(keyOf(n)) ? t("whatif.pandInside", { id: inPand.get(keyOf(n)) }) : null);
   renderTree(svg, doc(), { mode: "whatif", zoom: fitZoom(box, doc(), S.ui.zoomRes, "result"), probs, color: scale, forced, success: S.success,
-    tip: (n) => resultTip(n, probs, { base: W ? W.base_probabilities : null, forced, hint: n.t === "leaf" ? t("whatif.clickHint") : null }),
-    onNode: (n) => { if (n.t === "leaf") cycleForced(n.id); } }); // house events: set in the editor, not forced
+    tip: (n) => resultTip(n, probs, { base: W ? W.base_probabilities : null, forced, hint: hint(n) }),
+    onNode: (n) => cycleForced(keyOf(n)) }); // basic events and PAND gates; house events are set in the editor
   box.scrollLeft = sl; box.scrollTop = st;
 }
 
@@ -891,6 +920,7 @@ function renderUnc() {
     el("button", { type: "button", class: "btn ghost xs", onclick: () => setLtab("probs") }, p, t("unc.goProbs"));
   }
   el("p", { class: "hint", style: "margin-bottom:0" }, ctl, lenFixed ? t("unc.lenFixed", { n: lenFixed }) : t("unc.how"));
+  if (M.hasPand(doc())) el("p", { class: "hint", style: "margin-bottom:0" }, ctl, t("unc.pandNote"));
   if (S.unc.err) el("p", { class: "msg err" }, ctl, S.unc.err);
   const U = S.unc.res;
   if (!U) return;
@@ -1126,7 +1156,8 @@ function wire() {
     const ef = parseNum($("allEf").value);
     if (!(ef >= 1)) { $("probMsg").className = "msg err"; $("probMsg").textContent = t("probs.badEf"); return; }
     pushHist();
-    for (const id of M.basicIds(doc())) { const e = doc().events[id]; if (!e.samples && e.prob > 0) e.dist = { dist: "lognormal", median: e.prob, ef }; }
+    const inPand = M.pandMembers(doc());
+    for (const id of M.basicIds(doc())) { const e = doc().events[id]; if (!e.samples && e.prob > 0 && !inPand.has(id)) e.dist = { dist: "lognormal", median: e.prob, ef }; }
     $("probMsg").className = "msg ok"; $("probMsg").textContent = t("probs.allDone", { ef: fmtNum(ef, 3) });
     changed();
   });
