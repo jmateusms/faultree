@@ -408,7 +408,8 @@ def _check_special_events(tree: Dict[str, Any]) -> None:
     conditioning event belongs to one INHIBIT gate, because its probability
     is conditional on that gate's input; sharing it would apply the same
     condition to another event. The gate itself may be shared, by ref or by
-    repeating it (the flat format repeats a shared gate under each parent)."""
+    repeating it with the same id (the flat format repeats a shared gate
+    under each parent)."""
     registry: Dict[str, Dict[str, Any]] = {}
     gather_nodes(tree, registry)
     # Conditioning event id -> its INHIBIT gate (the gate's id, or the node

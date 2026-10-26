@@ -829,6 +829,13 @@ def test_pand_tree_runs_point_analysis_what_if_and_uncertainty():
         engine.analyze_uncertainty(tree, distributions={"A": {"dist": "lognormal", "median": 0.1, "ef": 3}}, n=10)
 
 
+def test_sample_vectors_inside_a_pand_do_not_block_the_point_analysis():
+    tree = _pand_tree()
+    tree["children"][0]["children"][0]["prob"] = [0.6, 0.7]
+    assert engine.analyze_point(tree)["Q"] == pytest.approx(analyze(_pand_tree())["Q"], rel=1e-15)
+    assert engine.what_if(tree, {"P1": "failed"})["Q"] == 1.0
+
+
 @needs_node
 def test_pand_round_trips_through_the_editor_model():
     tree = engine.import_tree(_pand_tree())["tree"]

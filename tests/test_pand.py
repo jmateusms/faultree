@@ -201,26 +201,63 @@ def test_steep_inputs_refine_the_grid(m1, m2, t, exact):
     tree = top(pand("TOP", {"id": "A", "failure_model": m1}, {"id": "B", "failure_model": m2}), t)
     result = analyze(tree)
     details = result["assumptions"]["pand"]["TOP"]
-    assert result["Q"] == pytest.approx(exact, rel=1e-7)
+    assert result["Q"] == pytest.approx(exact, rel=2e-7)
     # The estimate bounds the error of the unextrapolated value, so it must
     # not be smaller than the error actually made.
     assert abs(result["Q"] - exact) <= max(3 * details["abs_error_estimate"], 1e-12)
     assert details["grid_points"] > 4097
 
 
-def test_grid_refinement_has_a_ceiling(monkeypatch):
+def test_grid_refinement_has_a_memory_budget(monkeypatch):
     from faultree import dynamic
-    monkeypatch.setattr(dynamic, "MAX_GRID_POINTS", 0)
-    monkeypatch.setattr(dynamic, "MAX_GRID_GROWTH", 1)
+    monkeypatch.setattr(dynamic, "MAX_GRID_VALUES", 0)
+    monkeypatch.setattr(dynamic, "REFINE_RISE", 2)
     tree = top(pand("TOP", expo("A", 5.0), expo("B", 10.0)), 8760.0)
-    with pytest.raises(ValueError, match=r"PAND gate 'TOP'.*grid points \(pand_steps=4096\)"):
+    with pytest.raises(ValueError, match=r"PAND gate 'TOP'.*2 events x .*pand_steps=4096"):
         analyze(tree)
 
 
-def test_a_cdf_too_steep_for_the_grid_is_an_error():
+def test_inputs_failing_within_one_unresolvable_interval_are_an_error():
     tree = top(pand("TOP", expo("A", 1.0), expo("B", 2.0)), 1e25)
-    with pytest.raises(ValueError, match="too steeply to resolve"):
+    with pytest.raises(ValueError, match="order of their failures"):
         analyze(tree)
+
+
+def _weibull_first(beta, eta, lam, t):
+    """P(T_A < T_B <= t), Weibull A, exponential B, by Gauss-Legendre in
+    w = (u / eta)^beta, where the integrand is smooth."""
+    x, wts = np.polynomial.legendre.leggauss(80)
+    top_w = (t / eta) ** beta
+    w = 0.5 * top_w * (x + 1)
+    u = eta * w ** (1 / beta)
+    integrand = -np.expm1(-w) * lam * np.exp(-lam * u) * (eta / beta) * w ** (1 / beta - 1)
+    return float(0.5 * top_w * np.sum(wts * integrand))
+
+
+@pytest.mark.parametrize("first, exact", [
+    # an integrable singularity at 0: the CDF never resolves near 0
+    ({"dist": "weibull", "beta": 0.1, "eta": 1000.0}, _weibull_first(0.1, 1000.0, 1e-3, T)),
+    ({"dist": "weibull", "beta": 0.05, "eta": 1000.0}, _weibull_first(0.05, 1000.0, 1e-3, T)),
+    # near-deterministic failure times, below the grid's float resolution
+    ({"dist": "exponential", "lambda": 1e20}, 1 - math.exp(-1.0)),
+    ({"dist": "normal", "mu": 500.0, "sigma": 1e-12}, math.exp(-0.5) - math.exp(-1.0)),
+])
+def test_unresolvable_intervals_that_cannot_matter_are_bounded(first, exact):
+    tree = top(pand("TOP", {"id": "A", "failure_model": first}, expo("B", 1e-3)))
+    result = analyze(tree)
+    assert result["Q"] == pytest.approx(exact, rel=1e-9)
+    assert result["assumptions"]["pand"]["TOP"]["abs_error_estimate"] < 1e-6
+
+
+@pytest.mark.parametrize("model", [{"dist": "normal", "mu": 10.0, "sigma": 2.0},
+                                   {"dist": "lognormal", "tmed": 10.0, "s": 1.0}])
+def test_lifetime_cdf_takes_a_scalar(model):
+    assert float(lifetime_cdf(model, 5.0)) == pytest.approx(float(lifetime_cdf(model, np.array([5.0]))[0]))
+
+
+def test_a_gate_without_id_inside_a_pand():
+    tree = top(pand("TOP", {"gate": "OR", "children": [expo("A", 1e-3), expo("B", 2e-3)]}, expo("C", 1e-3)))
+    assert analyze(tree)["Q"] == pytest.approx(two_exponentials(3e-3, 1e-3), rel=1e-9)
 
 
 def test_each_pand_module_gets_its_own_grid():

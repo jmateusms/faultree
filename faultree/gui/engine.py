@@ -196,8 +196,9 @@ def _int(value: Any, name: str, low: int, high: int) -> int:
 
 
 def _require_scalars(tree: Dict[str, Any]) -> None:
+    basic = set(_basic_ids(tree))  # events inside a PAND take no probability
     vectors = [eid for eid, value in var_probs_from_tree(tree).items()
-               if np.ndim(value) > 0]
+               if np.ndim(value) > 0 and eid in basic]
     if vectors:
         raise GuiError("the point analysis needs one probability per event; "
                        "sample vectors go to the uncertainty analysis ("
@@ -294,7 +295,8 @@ def analyze_point(tree: Any, *, success_mode: bool = False, max_order: int = 6,
     _require_scalars(tree)
     result = analyze(tree, None, success_mode=success_mode)
     top_id = str(tree["id"])
-    inputs = {eid: float(p) for eid, p in var_probs_from_tree(tree).items()}
+    basic = set(_basic_ids(tree))
+    inputs = {eid: float(p) for eid, p in var_probs_from_tree(tree).items() if eid in basic}
     # A PAND gate is one BDD variable whose value comes from its module.
     for gate_id, details in result["assumptions"]["pand"].items():
         inputs[gate_id] = 1.0 - details["Q"] if success_mode else details["Q"]

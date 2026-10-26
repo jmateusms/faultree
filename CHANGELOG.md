@@ -11,7 +11,7 @@
   `state` or with a `prob`, an INHIBIT gate without exactly one input and
   one conditioning event, and a conditioning event outside its INHIBIT gate
   or shared with another gate (the INHIBIT gate itself may be shared, by
-  `ref` or by repeating it, as the flat format does).
+  `ref` or by repeating it with the same id, as the flat format does).
   `examples/nureg_symbols.json` uses them.
 - PRIORITY AND gates (`"gate": "PAND"`): all inputs occur by the mission
   time, in order from left to right. Each PAND is quantified as an
@@ -23,10 +23,12 @@
   Richardson extrapolation, then one BDD variable with that probability.
   Nested PANDs, house events and AND/OR/K_OF_N subtrees are allowed inside;
   shared events, XOR/INHIBIT inside, binomial models, cycles through a
-  PAND and probabilities given for events inside one are rejected. A house
+  PAND, probabilities given for events inside one, and inputs that fail
+  within an interval too short for the grid are rejected. A house
   event that has occurred occurs at time 0. `analyze(..., pand_steps=)` and
   `assumptions["pand"]` (value, error estimate, grid points);
-  `quantify_compiled(..., pand=)` reuses a `pand_probabilities` result. New module `faultree.dynamic`. `examples/priority_and.json`.
+  `quantify_compiled(..., pand=)` reuses a `pand_probabilities` result. New
+  module `faultree.dynamic`. `examples/priority_and.json`.
 - Flat format: `be_nodes` entries may carry `event_type` (basic,
   undeveloped, house, conditioning) `state` and `failure_model`; a flat model's top-level
   `mission_time` and `time_unit` are kept.

@@ -195,7 +195,10 @@ independent module and puts it into the BDD as one variable:
   extrapolation), and P(PAND) = G_n(mission_time). Each outermost PAND
   gate has its own grid: uniform, with intervals halved where one of its
   events' CDFs rises steeply (a failure time much shorter than the mission
-  time, or a narrow distribution). A CDF too steep to resolve is an error.
+  time, or a narrow distribution). An interval the grid cannot resolve (a
+  CDF singular at 0, a nearly deterministic failure time) adds a bound to
+  the error estimate; when inputs fail within such an interval, so that
+  their order cannot be resolved, it is an error.
 - `analyze(..., pand_steps=4096)` sets the uniform grid; `assumptions["pand"]`
   reports each gate's value, an error estimate and the number of grid
   points. The PAND id is the event in cut sets, importance and what-if;
