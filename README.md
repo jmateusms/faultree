@@ -163,8 +163,10 @@ The other symbols of the NRC Fault Tree Handbook (NUREG-0492):
   is the probability of the condition *given the input*, so
   P(output) = P(input) · P(condition | input) exactly. A conditioning
   event belongs to one INHIBIT gate: it cannot appear elsewhere or be
-  shared by `ref`. It is otherwise an ordinary variable, with importance
-  measures and a place in the cut sets. Expressions show the gate as AND.
+  shared by `ref`. The INHIBIT gate itself can be shared, by `ref` or by
+  repeating it (as the flat format does). The conditioning event is
+  otherwise an ordinary variable, with importance measures and a place in
+  the cut sets. Expressions show the gate as AND.
 - An **undeveloped** event is a basic event whose causes are not developed
   further; it differs only in the drawing.
 - **Transfer** in/out symbols are a drawing convention; `ref` gives the
@@ -181,16 +183,25 @@ independent module and puts it into the BDD as one variable:
   (exponential, weibull, normal, lognormal, gamma, uniform, or poisson for
   the time of the k-th failure), and the top event a `mission_time`. House
   events are allowed; inside the gate only AND, OR, K_OF_N and PAND gates are.
+- A house event that has occurred (`state: true`) occurs at time 0, and
+  inputs that occur at the same time are not in order. With such an event
+  H, PAND(A, H) = 0 and PAND(H, A) = P(0 < T_A ≤ t). A house event that has
+  not occurred never occurs.
 - The inputs share no events with each other, and no event under the gate
   appears elsewhere in the tree. The gate itself may be shared by `ref`.
 - Each input's failure-time CDF F_i(s) comes from its model, or for a
   subtree from its BDD evaluated on a time grid. Then G_1 = F_1 and
   G_k(s) = ∫₀ˢ G_{k-1}(u) dF_k(u) (trapezoidal Stieltjes sums, Richardson
-  extrapolation), and P(PAND) = G_n(mission_time).
-- `analyze(..., pand_steps=4096)` sets the grid; `assumptions["pand"]`
-  reports each gate's value and an error estimate. The PAND id is the event
-  in cut sets, importance and what-if; events inside it get their
-  probability at the mission time. Expressions show `PAND(A, B)`.
+  extrapolation), and P(PAND) = G_n(mission_time). The grid is uniform,
+  and its intervals are halved where an event's CDF rises steeply: a
+  failure time much shorter than the mission time, or a narrow
+  distribution.
+- `analyze(..., pand_steps=4096)` sets the uniform grid; `assumptions["pand"]`
+  reports each gate's value, an error estimate and the number of grid
+  points. The PAND id is the event in cut sets, importance and what-if;
+  events inside it get their probability at the mission time, so a
+  probability given for one of them (`--probs`, a probability file) is an
+  error. Expressions show `PAND(A, B)`.
 
 `examples/priority_and.json` uses it. Standby and spare structures, where
 the same component appears inside and outside the ordered gate, are not

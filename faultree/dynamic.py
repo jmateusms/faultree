@@ -20,6 +20,9 @@ follows by the recursion
     G_1 = F_1,    G_k(s) = integral over [0, s] of G_{k-1}(u) dF_k(u),
 
 a Stieltjes integral computed with the trapezoidal rule, and P(PAND) = G_n(t).
+The grid is uniform where the events' CDFs change slowly and is halved
+locally where one of them rises steeply (a failure time much shorter than
+the mission time, or a narrow wear-out distribution).
 The PAND then enters the main BDD as one variable with that probability, which
 is exact because the module is independent of everything else.
 """
@@ -31,6 +34,9 @@ import numpy as np
 
 #: Grid intervals over [0, mission_time]; even, so the half grid is a subset.
 DEFAULT_PAND_STEPS = 4096
+#: Limits of the local grid refinement (see _quadrature_grid).
+MAX_REFINEMENTS = 64
+MAX_GRID_POINTS = 500_000
 
 #: Time-to-failure models a PAND input may use (the GUI's failure models
 #: without ``binomial``, which counts demands, not time).
@@ -205,20 +211,27 @@ def pand_gates(tree: Dict[str, Any], registry: Dict[str, Dict[str, Any]]) -> Lis
     order: List[Dict[str, Any]] = []
     seen: Set[str] = set()
 
-    def visit(node: Dict[str, Any], path: Set[str]) -> None:
+    def visit(node: Dict[str, Any], path: List[str]) -> None:
         current = _resolve(node, registry)
         if current is None:
             return
-        nid = str(current.get("id"))
-        if nid in path:
-            return  # the cycle is reported by the main traversal
+        if "id" in current:
+            nid = str(current["id"])
+            # The main traversal treats a PAND as one event and does not look
+            # inside it, so a cycle through a PAND is reported here.
+            if nid in path:
+                cycle = path[path.index(nid):] + [nid]
+                raise ValueError(
+                    "Cycle detected in tree (id revisited on the same path; a ref"
+                    " cycle or a duplicate id): " + " -> ".join(cycle))
+            path = path + [nid]
         for child in _children(current):
-            visit(child, path | {nid})
-        if is_pand(current) and nid not in seen:
-            seen.add(nid)
+            visit(child, path)
+        if is_pand(current) and str(current.get("id")) not in seen:
+            seen.add(str(current.get("id")))
             order.append(current)
 
-    visit(tree, set())
+    visit(tree, [])
     return order
 
 
@@ -306,6 +319,48 @@ class PandResult:
     details: Dict[str, Dict[str, Any]]
 
 
+def _module_events(tree: Dict[str, Any], registry: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """The events inside PAND gates (house events aside), by id."""
+    from .builder import _is_house, _is_leaf, gather_nodes
+    nodes: Dict[str, Dict[str, Any]] = {}
+    gather_nodes(tree, nodes)
+    return {nid: nodes[nid] for nid in sorted(module_members(tree, registry))
+            if _is_leaf(nodes[nid]) and not _is_house(nodes[nid])}
+
+
+def _quadrature_grid(events: Dict[str, Dict[str, Any]], t: float, steps: int) -> np.ndarray:
+    """The coarse grid on [0, t]: steps/2 equal intervals, each one halved
+    until no event's CDF rises by more than 2/steps across it.
+
+    A uniform grid misses a CDF that rises within a few of its intervals, and
+    the half grid misses it the same way, so the error estimate would not
+    show it. The events' CDFs bound those of the subtrees, which are
+    polynomials in them, so resolving the events resolves every input."""
+    grid = np.linspace(0.0, t, steps // 2 + 1)
+    tol = 2.0 / steps
+    cdfs = {eid: lifetime_cdf(node["failure_model"], grid, eid) for eid, node in events.items()}
+    for _ in range(MAX_REFINEMENTS):
+        if not cdfs:
+            break
+        rise = np.max([np.diff(f) for f in cdfs.values()], axis=0)
+        steep = rise > tol
+        left, right = grid[:-1][steep], grid[1:][steep]
+        mids = 0.5 * (left + right)
+        mids = mids[(mids > left) & (mids < right)]  # stop at float resolution
+        if not mids.size:
+            break
+        order = np.argsort(np.concatenate((grid, mids)), kind="stable")
+        grid = np.concatenate((grid, mids))[order]
+        cdfs = {eid: np.concatenate((f, lifetime_cdf(events[eid]["failure_model"], mids, eid)))[order]
+                for eid, f in cdfs.items()}
+        if grid.size > MAX_GRID_POINTS:
+            raise ValueError(
+                f"PAND gates: resolving the failure-time models over the mission time "
+                f"needs more than {MAX_GRID_POINTS} grid points; a failure time is too "
+                "short (or a distribution too narrow) next to the mission time")
+    return grid
+
+
 def _module_pass(tree: Dict[str, Any], registry: Dict[str, Dict[str, Any]],
                  gates: List[Dict[str, Any]], grid: np.ndarray) -> Dict[str, np.ndarray]:
     """CDF on ``grid`` of every node inside or at a PAND gate."""
@@ -337,18 +392,23 @@ def quantify_pand(tree: Dict[str, Any], registry: Dict[str, Dict[str, Any]],
     """Probabilities of every PAND gate and of every node inside one, at the
     tree's mission time.
 
-    The grid has ``steps`` intervals; a second pass on half of them gives a
+    The grid has ``steps`` intervals, more where an event's CDF rises steeply
+    (see :func:`_quadrature_grid`); a second pass on every other point gives a
     Richardson-extrapolated value (the trapezoidal rule is second order) and
-    ``abs_error_estimate`` = |P_steps - P_half| / 3, the estimated error of the
-    full-grid value before extrapolation."""
+    ``abs_error_estimate`` = |P_fine - P_coarse| / 3, the estimated error of
+    the fine-grid value before extrapolation."""
     if isinstance(steps, bool) or not isinstance(steps, int) or steps < 4 or steps % 2:
         raise ValueError("pand_steps must be an even integer >= 4")
     gates = pand_gates(tree, registry)
     if not gates:
         return PandResult({}, {}, {})
     t = float(tree["mission_time"])
-    fine = _module_pass(tree, registry, gates, np.linspace(0.0, t, steps + 1))
-    coarse = _module_pass(tree, registry, gates, np.linspace(0.0, t, steps // 2 + 1))
+    coarse_grid = _quadrature_grid(_module_events(tree, registry), t, steps)
+    fine_grid = np.empty(2 * coarse_grid.size - 1)
+    fine_grid[0::2] = coarse_grid
+    fine_grid[1::2] = 0.5 * (coarse_grid[:-1] + coarse_grid[1:])
+    fine = _module_pass(tree, registry, gates, fine_grid)
+    coarse = _module_pass(tree, registry, gates, coarse_grid)
     gate_ids = {str(g["id"]) for g in gates}
     values: Dict[str, float] = {}
     details: Dict[str, Dict[str, Any]] = {}
@@ -357,7 +417,8 @@ def quantify_pand(tree: Dict[str, Any], registry: Dict[str, Dict[str, Any]],
         values[nid] = min(1.0, max(0.0, (4.0 * p_fine - p_coarse) / 3.0))
         if nid in gate_ids:
             details[nid] = {"Q": values[nid], "abs_error_estimate": abs(p_fine - p_coarse) / 3.0,
-                            "steps": steps, "mission_time": t}
+                            "steps": steps, "grid_points": int(fine_grid.size),
+                            "mission_time": t}
     members = module_members(tree, registry)
     return PandResult(gates={g: values[g] for g in gate_ids},
                       inside={n: values[n] for n in members},

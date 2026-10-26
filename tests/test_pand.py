@@ -167,6 +167,78 @@ def test_steps_parameter_and_error_estimate_shrink_together():
         analyze(tree, pand_steps=101)
 
 
+def _uniform_before(a1, b1, a2, b2):
+    """P(T1 < T2) for T1 ~ U(a1, b1), T2 ~ U(a2, b2), by exact integration of
+    the piecewise-linear F1 against the uniform density of T2."""
+    def f1_integral(x):  # integral of F1 from -inf to x
+        if x <= a1:
+            return 0.0
+        if x <= b1:
+            return (x - a1) ** 2 / (2 * (b1 - a1))
+        return (b1 - a1) / 2 + (x - b1)
+    return (f1_integral(b2) - f1_integral(a2)) / (b2 - a2)
+
+
+def _normal_before(mu1, mu2, sigma):
+    return 0.5 * math.erfc(-((mu2 - mu1) / (sigma * math.sqrt(2))) / math.sqrt(2))
+
+
+@pytest.mark.parametrize("m1, m2, t, exact", [
+    # failure times far shorter than the mission time
+    ({"dist": "exponential", "lambda": 5.0}, {"dist": "exponential", "lambda": 10.0}, 8760.0,
+     two_exponentials(5.0, 10.0, 8760.0)),
+    ({"dist": "exponential", "lambda": 20.0}, {"dist": "exponential", "lambda": 50.0}, 8760.0,
+     two_exponentials(20.0, 50.0, 8760.0)),
+    ({"dist": "exponential", "lambda": 0.5}, {"dist": "exponential", "lambda": 1.0}, 8760.0,
+     two_exponentials(0.5, 1.0, 8760.0)),
+    # narrow wear-out distributions
+    ({"dist": "uniform", "a": 500.0, "b": 500.1}, {"dist": "uniform", "a": 500.05, "b": 500.2}, T,
+     _uniform_before(500.0, 500.1, 500.05, 500.2)),
+    ({"dist": "normal", "mu": 500.0, "sigma": 0.05}, {"dist": "normal", "mu": 500.06, "sigma": 0.05}, T,
+     _normal_before(500.0, 500.06, 0.05)),
+])
+def test_steep_inputs_refine_the_grid(m1, m2, t, exact):
+    tree = top(pand("TOP", {"id": "A", "failure_model": m1}, {"id": "B", "failure_model": m2}), t)
+    result = analyze(tree)
+    details = result["assumptions"]["pand"]["TOP"]
+    assert result["Q"] == pytest.approx(exact, rel=1e-7)
+    # The estimate bounds the error of the unextrapolated value, so it must
+    # not be smaller than the error actually made.
+    assert abs(result["Q"] - exact) <= max(3 * details["abs_error_estimate"], 1e-12)
+    assert details["grid_points"] > 4097
+
+
+def test_grid_refinement_has_a_ceiling(monkeypatch):
+    from faultree import dynamic
+    monkeypatch.setattr(dynamic, "MAX_GRID_POINTS", 3000)
+    tree = top(pand("TOP", expo("A", 5.0), expo("B", 10.0)), 8760.0)
+    with pytest.raises(ValueError, match="grid points"):
+        analyze(tree)
+
+
+@pytest.mark.parametrize("back", [{"ref": "P"}, {"ref": "TOP"}])
+def test_a_cycle_through_a_pand_is_reported(back):
+    tree = top({"id": "TOP", "gate": "OR", "children": [
+        pand("P", {"id": "H", "event_type": "house", "state": True},
+             {"id": "G", "gate": "OR", "children": [expo("B", 1e-3), back]}),
+        {"id": "X", "prob": 0.1}]})
+    with pytest.raises(ValueError, match="Cycle detected.* -> P"):
+        normalize_tree(tree)
+
+
+def test_probabilities_for_events_inside_a_pand_are_rejected(tmp_path):
+    tree = top({"id": "TOP", "gate": "OR", "children": [
+        pand("P", expo("A", 1e-3), expo("B", 2e-3)), {"id": "D", "prob": 0.01}]})
+    with pytest.raises(ValueError, match="inside a PAND gate: A"):
+        analyze(tree, {"A": [0.9, 0.9, 0.9]})
+    csv = tmp_path / "probs.csv"
+    csv.write_text("B,D\n0.5,0.02\n")
+    with pytest.raises(ValueError, match="inside a PAND gate: B"):
+        analyze(tree, str(csv))
+    # Forcing the gate itself is how a what-if sets it.
+    assert analyze(tree, {"P": 1.0})["Q"] == 1.0
+
+
 @pytest.mark.parametrize("tree, message", [
     (pand("TOP", expo("A", 1e-3), expo("B", 2e-3)), "mission_time"),
     (top(pand("TOP", expo("A", 1e-3))), "at least two inputs"),

@@ -341,7 +341,8 @@ def what_if(tree: Any, forced: Any, *, success_mode: bool = False) -> Dict[str, 
         raise GuiError("'forced' must map event ids to 'failed' or 'working'")
     basic = set(_basic_ids(tree))
     compiled = compile_tree(tree, success_mode=success_mode, include_expressions=False)
-    base = var_probs_from_tree(tree)
+    # Events inside a PAND gate take their values from its module.
+    base = {eid: p for eid, p in var_probs_from_tree(tree).items() if eid in basic}
     probs = dict(base)
     for eid, state in forced.items():
         if eid not in basic:
@@ -505,8 +506,9 @@ def analyze_uncertainty(tree: Any, *, distributions: Any = None, samples: Any = 
         if eid not in basic:
             raise GuiError(f"'{eid}' is not a basic event of this tree")
     given: Dict[str, np.ndarray] = {}
+    # Events inside a PAND gate take their values from its module.
     tree_vectors = {eid: value for eid, value in var_probs_from_tree(tree).items()
-                    if np.ndim(value) > 0}
+                    if np.ndim(value) > 0 and eid in basic}
     for eid, vector in {**tree_vectors, **samples}.items():
         if eid in distributions:
             continue  # an explicit distribution replaces the vector
@@ -526,7 +528,7 @@ def analyze_uncertainty(tree: Any, *, distributions: Any = None, samples: Any = 
         raise GuiError("no event has a distribution or sample vector")
 
     probs: Dict[str, Any] = {eid: p for eid, p in var_probs_from_tree(tree).items()
-                             if np.ndim(p) == 0}
+                             if np.ndim(p) == 0 and eid in basic}
     probs.update(given)
     clipped: Dict[str, int] = {}
     inputs: Dict[str, Any] = {}

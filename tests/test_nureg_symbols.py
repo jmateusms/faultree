@@ -118,13 +118,37 @@ def test_conditioning_event_cannot_be_shared():
     by_copy = {"id": "TOP", "gate": "OR", "children": [
         {"id": "I1", "gate": "INHIBIT", "children": [{"id": "A", "prob": 0.1}, cond]},
         {"id": "I2", "gate": "INHIBIT", "children": [{"id": "B", "prob": 0.1}, dict(cond)]}]}
-    with pytest.raises(ValueError, match="more than once"):
+    with pytest.raises(ValueError, match="more than once, under different INHIBIT gates"):
         analyze(by_copy)
     by_ref = {"id": "TOP", "gate": "OR", "children": [
         {"id": "I1", "gate": "INHIBIT", "children": [{"id": "A", "prob": 0.1}, cond]},
         {"id": "I2", "gate": "INHIBIT", "children": [{"id": "B", "prob": 0.1}, {"ref": "C"}]}]}
     with pytest.raises(ValueError, match="cannot be shared"):
         analyze(by_ref)
+
+
+def test_a_shared_inhibit_gate_keeps_its_one_conditioning_event():
+    # The flat format can only share a gate by repeating it under each parent.
+    flat = {
+        "ft_nodes": [
+            {"label": "TOP", "gate": "OR", "branches": ["G1", "G2"]},
+            {"label": "G1", "gate": "AND", "branches": ["I", "X"]},
+            {"label": "G2", "gate": "AND", "branches": ["I", "Y"]},
+            {"label": "I", "gate": "INHIBIT", "branches": ["A", "C"]}],
+        "be_nodes": [
+            {"label": "A", "prob": 0.1}, {"label": "C", "event_type": "conditioning", "prob": 0.5},
+            {"label": "X", "prob": 0.2}, {"label": "Y", "prob": 0.3}]}
+    inhibit = {"id": "I", "gate": "INHIBIT", "children": [
+        {"id": "A", "prob": 0.1}, {"id": "C", "event_type": "conditioning", "prob": 0.5}]}
+    by_ref = {"id": "TOP", "gate": "OR", "children": [
+        {"id": "G1", "gate": "AND", "children": [inhibit, {"id": "X", "prob": 0.2}]},
+        {"id": "G2", "gate": "AND", "children": [{"ref": "I"}, {"id": "Y", "prob": 0.3}]}]}
+    by_copy = {"id": "TOP", "gate": "OR", "children": [
+        {"id": "G1", "gate": "AND", "children": [inhibit, {"id": "X", "prob": 0.2}]},
+        {"id": "G2", "gate": "AND", "children": [dict(inhibit), {"id": "Y", "prob": 0.3}]}]}
+    expected = 0.05 * (1 - 0.8 * 0.7)
+    for tree in (flat, by_ref, by_copy):
+        assert analyze(tree)["Q"] == pytest.approx(expected, rel=1e-12)
 
 
 def test_flat_format_carries_event_types_and_state():

@@ -768,6 +768,24 @@ def test_inhibit_and_conditioning_issues_and_house_events_without_probability():
     assert got["applied"] == ["House events take a state, not a probability; these columns were ignored: H."]
 
 
+@needs_node
+def test_a_cloned_inhibit_gate_saves_as_flat_and_loads_back():
+    got = run_model_js("""
+        const ev = (kind, prob) => ({ name: "", prob, kind, dist: null, samples: null });
+        const inhibit = M.gateNode("I", "", "INHIBIT", [M.leafNode("A"), M.leafNode("C")]);
+        const doc = { root: M.gateNode("TOP", "", "OR", [
+            M.gateNode("G1", "", "AND", [inhibit, M.leafNode("X")]),
+            M.gateNode("G2", "", "AND", [M.refNode("I"), M.leafNode("Y")])]),
+          events: { A: ev("basic", 0.1), C: ev("conditioning", 0.5), X: ev("basic", 0.2), Y: ev("basic", 0.3) },
+          meta: {} };
+        console.log(JSON.stringify({ issues: M.validate(doc), tree: M.exportTree(doc, { engine: true }),
+                                     flat: M.exportFlat(doc) }));""")
+    assert got["issues"] == []
+    q = analyze(got["tree"])["Q"]
+    flat = engine.import_tree(got["flat"])["tree"]
+    assert analyze(flat)["Q"] == pytest.approx(q, rel=1e-15)
+
+
 # ------------------------------------------------ PRIORITY AND (GUI side) --
 def _pand_tree():
     """OR(PAND(A, OR(B, C)), D, clone of the PAND), mission time 1000 h."""

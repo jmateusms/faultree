@@ -405,14 +405,17 @@ def _check_special_events(tree: Dict[str, Any]) -> None:
 
     A house event has a boolean ``state`` and no probability. An INHIBIT gate
     has exactly two inputs: the input event and one conditioning event. A
-    conditioning event appears only there and only once, because its
-    probability is conditional on that gate's input; sharing it would apply
-    the same condition to another event."""
+    conditioning event belongs to one INHIBIT gate, because its probability
+    is conditional on that gate's input; sharing it would apply the same
+    condition to another event. The gate itself may be shared, by ref or by
+    repeating it (the flat format repeats a shared gate under each parent)."""
     registry: Dict[str, Dict[str, Any]] = {}
     gather_nodes(tree, registry)
-    conditioning_seen: Dict[str, int] = {}
+    # Conditioning event id -> its INHIBIT gate (the gate's id, or the node
+    # itself when it has none).
+    owners: Dict[str, Any] = {}
 
-    def visit(node: Dict[str, Any], parent_gate: Optional[str]) -> None:
+    def visit(node: Dict[str, Any], parent: Optional[Dict[str, Any]]) -> None:
         if "ref" in node:
             target = registry.get(str(node["ref"]))
             if target is not None and target.get("event_type") == "conditioning":
@@ -433,17 +436,17 @@ def _check_special_events(tree: Dict[str, Any]) -> None:
                 raise ValueError(
                     f"House event '{nid}' takes 'state' (true/false), not 'prob'")
         if et == "conditioning":
-            if parent_gate != "INHIBIT":
+            if parent is None or parent.get("gate") != "INHIBIT":
                 raise ValueError(
                     f"Conditioning event '{nid}' must be an input of an INHIBIT gate")
-            conditioning_seen[str(nid)] = conditioning_seen.get(str(nid), 0) + 1
-            if conditioning_seen[str(nid)] > 1:
+            owner = str(parent["id"]) if "id" in parent else id(parent)
+            if owners.setdefault(str(nid), owner) != owner:
                 raise ValueError(
-                    f"Conditioning event '{nid}' appears more than once: it belongs "
-                    "to one INHIBIT gate")
+                    f"Conditioning event '{nid}' appears more than once, under "
+                    "different INHIBIT gates: it belongs to one INHIBIT gate")
         children = _children_of(node)
         for child in children:
-            visit(child, node.get("gate"))
+            visit(child, node)
         if node.get("gate") == "INHIBIT":
             conditions = [c for c in children
                           if "ref" not in c and c.get("event_type") == "conditioning"]
@@ -871,7 +874,8 @@ def _prepared_probabilities(tree: Dict[str, Any], probs_by_id: Union[Dict[str, A
     """Resolve and validate input probabilities once for a quantification.
 
     A PAND gate's probability comes from its module; a caller's value for the
-    gate id (a what-if forcing it) takes precedence."""
+    gate id (a what-if forcing it) takes precedence. A caller's value for a
+    node inside a PAND gate would be ignored, so it is an error."""
     base_probs = var_probs_from_tree(tree)
     if pand is None:
         pand = pand_probabilities(tree)
@@ -879,11 +883,19 @@ def _prepared_probabilities(tree: Dict[str, Any], probs_by_id: Union[Dict[str, A
         base_probs[gate_id] = _as_input(value, success_mode)
     if probs_by_id:
         if isinstance(probs_by_id, str):
-            base_probs.update(load_probs_from_file(probs_by_id))
+            given = load_probs_from_file(probs_by_id)
         elif isinstance(probs_by_id, dict):
-            base_probs.update(probs_by_id)
+            given = probs_by_id
         else:
             raise TypeError("probabilities must be a mapping, file path, or None")
+        inside = sorted(str(nid) for nid in given if str(nid) in pand.inside)
+        if inside:
+            raise ValueError(
+                "Probabilities given for events inside a PAND gate: "
+                + ", ".join(inside) + ". Their probabilities come from their "
+                "failure models at the mission time, so these values would not be "
+                "used; remove them (to force a PAND gate, give the gate's id)")
+        base_probs.update(given)
     _validate_probs(tree, base_probs, allow_missing)
     base_probs = align_probabilities(
         base_probs, shuffle=shuffle, seed=seed,
