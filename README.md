@@ -164,7 +164,7 @@ The other symbols of the NRC Fault Tree Handbook (NUREG-0492):
   P(output) = P(input) · P(condition | input) exactly. A conditioning
   event belongs to one INHIBIT gate: it cannot appear elsewhere or be
   shared by `ref`. The INHIBIT gate itself can be shared, by `ref` or by
-  repeating it (as the flat format does). The conditioning event is
+  repeating it with the same id (as the flat format does). The conditioning event is
   otherwise an ordinary variable, with importance measures and a place in
   the cut sets. Expressions show the gate as AND.
 - An **undeveloped** event is a basic event whose causes are not developed
@@ -192,10 +192,10 @@ independent module and puts it into the BDD as one variable:
 - Each input's failure-time CDF F_i(s) comes from its model, or for a
   subtree from its BDD evaluated on a time grid. Then G_1 = F_1 and
   G_k(s) = ∫₀ˢ G_{k-1}(u) dF_k(u) (trapezoidal Stieltjes sums, Richardson
-  extrapolation), and P(PAND) = G_n(mission_time). The grid is uniform,
-  and its intervals are halved where an event's CDF rises steeply: a
-  failure time much shorter than the mission time, or a narrow
-  distribution.
+  extrapolation), and P(PAND) = G_n(mission_time). Each outermost PAND
+  gate has its own grid: uniform, with intervals halved where one of its
+  events' CDFs rises steeply (a failure time much shorter than the mission
+  time, or a narrow distribution). A CDF too steep to resolve is an error.
 - `analyze(..., pand_steps=4096)` sets the uniform grid; `assumptions["pand"]`
   reports each gate's value, an error estimate and the number of grid
   points. The PAND id is the event in cut sets, importance and what-if;

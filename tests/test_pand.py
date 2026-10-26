@@ -210,10 +210,40 @@ def test_steep_inputs_refine_the_grid(m1, m2, t, exact):
 
 def test_grid_refinement_has_a_ceiling(monkeypatch):
     from faultree import dynamic
-    monkeypatch.setattr(dynamic, "MAX_GRID_POINTS", 3000)
+    monkeypatch.setattr(dynamic, "MAX_GRID_POINTS", 0)
+    monkeypatch.setattr(dynamic, "MAX_GRID_GROWTH", 1)
     tree = top(pand("TOP", expo("A", 5.0), expo("B", 10.0)), 8760.0)
-    with pytest.raises(ValueError, match="grid points"):
+    with pytest.raises(ValueError, match=r"PAND gate 'TOP'.*grid points \(pand_steps=4096\)"):
         analyze(tree)
+
+
+def test_a_cdf_too_steep_for_the_grid_is_an_error():
+    tree = top(pand("TOP", expo("A", 1.0), expo("B", 2.0)), 1e25)
+    with pytest.raises(ValueError, match="too steeply to resolve"):
+        analyze(tree)
+
+
+def test_each_pand_module_gets_its_own_grid():
+    def wearout(i, mu):
+        return pand(f"P{i}", {"id": f"A{i}", "failure_model": {"dist": "normal", "mu": mu, "sigma": 20.0}},
+                    {"id": f"B{i}", "failure_model": {"dist": "normal", "mu": mu + 10.0, "sigma": 20.0}})
+    gates = [wearout(i, 500.0 + 300.0 * i) for i in range(20)]
+    together = analyze(top({"id": "TOP", "gate": "OR", "children": gates}, 8760.0))
+    alone = analyze(top(wearout(0, 500.0), 8760.0))["assumptions"]["pand"]["P0"]
+    details = together["assumptions"]["pand"]
+    assert details["P0"]["grid_points"] == alone["grid_points"] < 20_000
+    assert details["P0"]["Q"] == alone["Q"]
+    assert max(d["grid_points"] for d in details.values()) < 20_000
+
+
+def test_tree_probabilities_inside_a_pand_are_left_out():
+    tree = top({"id": "TOP", "gate": "OR", "children": [
+        pand("P", {**expo("A", 1e-3), "prob": [0.9, 0.9, 0.9]}, expo("B", 2e-3)),
+        {"id": "D", "prob": [0.01, 0.02]}]})
+    result = analyze(tree)
+    assert result["assumptions"]["sample_count"] == 2
+    p = two_exponentials(1e-3, 2e-3)
+    np.testing.assert_allclose(result["Q"], [1 - (1 - p) * 0.99, 1 - (1 - p) * 0.98], rtol=1e-9)
 
 
 @pytest.mark.parametrize("back", [{"ref": "P"}, {"ref": "TOP"}])

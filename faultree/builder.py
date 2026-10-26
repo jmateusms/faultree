@@ -875,10 +875,12 @@ def _prepared_probabilities(tree: Dict[str, Any], probs_by_id: Union[Dict[str, A
 
     A PAND gate's probability comes from its module; a caller's value for the
     gate id (a what-if forcing it) takes precedence. A caller's value for a
-    node inside a PAND gate would be ignored, so it is an error."""
-    base_probs = var_probs_from_tree(tree)
+    node inside a PAND gate would be ignored, so it is an error; the tree's
+    own ``prob`` of such a node is left out."""
     if pand is None:
         pand = pand_probabilities(tree)
+    base_probs = {nid: value for nid, value in var_probs_from_tree(tree).items()
+                  if nid not in pand.inside}
     for gate_id, value in pand.gates.items():
         base_probs[gate_id] = _as_input(value, success_mode)
     if probs_by_id:
@@ -950,11 +952,16 @@ def quantify_compiled(compiled: CompiledTree,
                       *, shuffle: bool = False, seed: Optional[int] = 0,
                       allow_missing: bool = False,
                       resample_independent: bool = False,
-                      pand_steps: int = DEFAULT_PAND_STEPS) -> Dict[str, Any]:
+                      pand_steps: int = DEFAULT_PAND_STEPS,
+                      pand: Optional[PandResult] = None) -> Dict[str, Any]:
     """Evaluate all event functions of a previously :func:`compile_tree` call.
 
-    Nodes inside a PAND gate get their module probability at the mission time."""
-    pand = pand_probabilities(compiled.tree, steps=pand_steps)
+    Nodes inside a PAND gate get their module probability at the mission time.
+    ``pand``, a :func:`pand_probabilities` result for this tree, saves
+    recomputing it when one tree is quantified with several probability maps
+    (it depends on the tree only)."""
+    if pand is None:
+        pand = pand_probabilities(compiled.tree, steps=pand_steps)
     base_probs = _prepared_probabilities(
         compiled.tree, probs_by_id, shuffle=shuffle, seed=seed,
         allow_missing=allow_missing, resample_independent=resample_independent,

@@ -296,8 +296,8 @@ def analyze_point(tree: Any, *, success_mode: bool = False, max_order: int = 6,
     top_id = str(tree["id"])
     inputs = {eid: float(p) for eid, p in var_probs_from_tree(tree).items()}
     # A PAND gate is one BDD variable whose value comes from its module.
-    for gate_id, value in pand_probabilities(tree).gates.items():
-        inputs[gate_id] = 1.0 - value if success_mode else value
+    for gate_id, details in result["assumptions"]["pand"].items():
+        inputs[gate_id] = 1.0 - details["Q"] if success_mode else details["Q"]
     q = float(result["Q"])
     compiled = compile_tree(tree, success_mode=success_mode, include_expressions=False)
     out = {
@@ -352,8 +352,9 @@ def what_if(tree: Any, forced: Any, *, success_mode: bool = False) -> Dict[str, 
         failed = state == "failed"
         probs[eid] = (0.0 if failed else 1.0) if success_mode else (1.0 if failed else 0.0)
     top_id = str(compiled.tree["id"])
-    baseline = quantify_compiled(compiled, base)
-    scenario = quantify_compiled(compiled, probs)
+    pand = pand_probabilities(compiled.tree)
+    baseline = quantify_compiled(compiled, base, pand=pand)
+    scenario = quantify_compiled(compiled, probs, pand=pand)
     return to_jsonable({
         "mode": "success" if success_mode else "failure",
         "top_id": top_id,
