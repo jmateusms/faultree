@@ -194,10 +194,13 @@ independent module and puts it into the BDD as one variable:
   G_k(s) = ∫₀ˢ G_{k-1}(u) dF_k(u) (trapezoidal Stieltjes sums, Richardson
   extrapolation), and P(PAND) = G_n(mission_time). Each outermost PAND
   gate has its own grid: uniform, with intervals halved where one of its
-  events' CDFs rises steeply (a failure time much shorter than the mission
-  time, or a narrow distribution). An interval the grid cannot resolve (a
-  CDF singular at 0, a nearly deterministic failure time) adds a bound to
-  the error estimate; when inputs fail within such an interval, so that
+  events' CDFs rises steeply or bends (a failure time much shorter than the
+  mission time, a narrow distribution or its tail); at time 0 down to float
+  resolution, for a CDF singular at 0 (Weibull or gamma shape below 1). The
+  error estimate is the difference between the grid and the half grid, or
+  more where a CDF still bends within an interval. An interval the grid
+  cannot resolve (a nearly deterministic failure time) adds a bound to the
+  estimate; when consecutive inputs fail within such an interval, so that
   their order cannot be resolved, it is an error.
 - `analyze(..., pand_steps=4096)` sets the uniform grid; `assumptions["pand"]`
   reports each gate's value, an error estimate and the number of grid

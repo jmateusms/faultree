@@ -35,15 +35,20 @@ import numpy as np
 #: Grid intervals over [0, mission_time]; even, so the half grid is a subset.
 DEFAULT_PAND_STEPS = 4096
 #: Local grid refinement (see _quadrature_grid): an interval of the coarse
-#: grid is halved while an event's CDF rises by more than REFINE_RISE / steps
-#: across it, at most MAX_REFINEMENTS times. A module may hold at most
-#: MAX_GRID_VALUES event CDF values on its fine grid (events x points), or
-#: twice what its uniform grid needs, whichever is larger. Intervals left
-#: steep may add at most UNRESOLVED_TOLERANCE to the result's error.
+#: grid is halved while an event's CDF rises by more than tol = REFINE_RISE /
+#: steps (at most 1/4) across it, or departs from a straight line by more
+#: than tol / 8 at its midpoint; at most MAX_REFINEMENTS times, except at
+#: time 0, where an interval halves down to float resolution. A module may
+#: hold at most MAX_GRID_VALUES event CDF values on its fine grid (events x
+#: points), or twice what its uniform grid needs, whichever is larger.
+#: Intervals left steep may add at most UNRESOLVED_TOLERANCE to the result's
+#: error. A subtree input is evaluated on at most MAX_WMC_VALUES values at a
+#: time (BDD nodes x grid points).
 REFINE_RISE = 16
 MAX_REFINEMENTS = 64
 MAX_GRID_VALUES = 30_000_000
 UNRESOLVED_TOLERANCE = 1e-6
+MAX_WMC_VALUES = 4_000_000
 
 #: Time-to-failure models a PAND input may use (the GUI's failure models
 #: without ``binomial``, which counts demands, not time).
@@ -83,8 +88,8 @@ def _lower_gamma_regularized(a: float, x: float) -> float:
             term *= x / ap
             total += term
             if abs(term) < abs(total) * 1e-16:
-                break
-        return min(1.0, total * math.exp(log_front))
+                return min(1.0, total * math.exp(log_front))
+        raise ValueError(f"incomplete gamma P({a:g}, {x:g}) did not converge (shape too large)")
     tiny = 1e-300
     b = x + 1.0 - a
     c, d = 1.0 / tiny, 1.0 / b
@@ -100,8 +105,8 @@ def _lower_gamma_regularized(a: float, x: float) -> float:
         delta = d * c
         h *= delta
         if abs(delta - 1.0) < 1e-16:
-            break
-    return max(0.0, 1.0 - math.exp(log_front) * h)
+            return max(0.0, 1.0 - math.exp(log_front) * h)
+    raise ValueError(f"incomplete gamma P({a:g}, {x:g}) did not converge (shape too large)")
 
 
 _ERFC = np.frompyfunc(math.erfc, 1, 1)
@@ -346,14 +351,39 @@ def _crossing_bound(rise: np.ndarray, groups: List[List[np.ndarray]]) -> float:
     """Bound on the trapezoid error of intervals the grid leaves unresolved.
 
     In one interval, the Stieltjes sum for G_k = int G_{k-1} dF_k is off by at
-    most (rise of G_{k-1}) x (rise of F_k), and an input rises at most by the
-    sum of its events' rises. ``rise`` is events x intervals; ``groups`` holds,
-    for each PAND gate of the module, the event rows of each of its inputs."""
+    most (rise of G_{k-1}) x (rise of F_k), and G_{k-1} rises at most as its
+    input k-1 does, so only consecutive inputs count. An input rises at most
+    by the sum of the rises of its events in :func:`_rise_events`. ``rise``
+    is events x intervals; ``groups`` holds, for each PAND gate of the module,
+    the event rows of each of its inputs."""
     total = 0.0
     for inputs in groups:
-        sums = np.array([rise[rows].sum(axis=0) for rows in inputs])
-        total += float(np.sum((sums.sum(axis=0) ** 2 - (sums ** 2).sum(axis=0)) / 2.0))
+        sums = [rise[rows].sum(axis=0) for rows in inputs]
+        for before, after in zip(sums, sums[1:]):
+            total += float(np.sum(before * after))
     return total
+
+
+def _rise_events(node: Dict[str, Any], registry: Dict[str, Dict[str, Any]],
+                 memo: Optional[Dict[int, Set[str]]] = None) -> Set[str]:
+    """Events whose failure can raise the CDF of ``node``: every event of a
+    static subtree, and for a PAND gate only those of its last input (the gate
+    fails when its last input does)."""
+    from .builder import _is_house, _is_leaf
+    memo = {} if memo is None else memo
+    current = _resolve(node, registry)
+    if current is None:
+        return set()
+    key = id(current)
+    if key not in memo:
+        if _is_leaf(current):
+            memo[key] = set() if _is_house(current) else {str(current.get("id"))}
+        elif is_pand(current):
+            children = _children(current)
+            memo[key] = _rise_events(children[-1], registry, memo) if children else set()
+        else:
+            memo[key] = set().union(*(_rise_events(c, registry, memo) for c in _children(current)))
+    return memo[key]
 
 
 def _quadrature_grid(events: Dict[str, Dict[str, Any]], groups: List[List[List[str]]],
@@ -364,17 +394,21 @@ def _quadrature_grid(events: Dict[str, Dict[str, Any]], groups: List[List[List[s
     error of intervals left unresolved.
 
     The grid starts as steps/2 equal intervals. An interval is halved while
-    some event's CDF rises by more than REFINE_RISE / steps across it: a
-    uniform grid misses a CDF that rises within a few of its intervals, and
-    the half grid misses it the same way, so the error estimate would not
-    show it. An input that is a subtree rises at most as fast as the sum of
-    its events' CDFs; what refining the events leaves shows in the estimate.
+    some event's CDF rises by more than tol = REFINE_RISE / steps across it,
+    or bends: its value at the midpoint is more than tol / 8 away from the
+    mean of its ends (a step or a kink inside, such as the tail of a narrow
+    distribution). A uniform grid misses a CDF that rises or bends within a
+    few of its intervals, and the half grid misses it the same way, so the
+    error estimate would not show it. An input that is a subtree rises at
+    most as fast as the sum of its events' CDFs; what refining the events
+    leaves shows in the estimate.
 
-    An interval still steep after MAX_REFINEMENTS halvings, or at float
-    resolution, stays: an integrable singularity at 0 (Weibull, gamma with a
-    shape below 1) or a near-deterministic failure time costs little when
-    the other inputs barely change there. Its possible error is bounded by
-    :func:`_crossing_bound`; above UNRESOLVED_TOLERANCE it is an error."""
+    An interval still steep after MAX_REFINEMENTS halvings (at time 0: down
+    to float resolution, for an integrable singularity such as a Weibull or
+    gamma shape below 1), or at float resolution, stays: a near-deterministic
+    failure time costs little when the other inputs barely change there. Its
+    possible error is bounded by :func:`_crossing_bound`; above
+    UNRESOLVED_TOLERANCE it is an error."""
     ids = list(events)
     rows = {eid: k for k, eid in enumerate(ids)}
     index = [[np.array([rows[e] for e in inputs if e in rows], dtype=int) for inputs in gate]
@@ -387,30 +421,33 @@ def _quadrature_grid(events: Dict[str, Dict[str, Any]], groups: List[List[List[s
         return out
 
     grid = np.linspace(0.0, t, steps // 2 + 1)
-    tol = REFINE_RISE / steps
+    tol = min(REFINE_RISE / steps, 0.25)  # a step on a grid point splits in two
     budget = max(MAX_GRID_VALUES, 2 * len(ids) * (steps + 1))
     base = cdfs_at(grid)
     points, new_times, new_cdfs = grid.size, [], []
     # Intervals still to examine: their end times and the CDFs there.
     left_t, right_t, left_f, right_f = grid[:-1], grid[1:], base[:, :-1], base[:, 1:]
     unresolved = 0.0
-    for level in range(MAX_REFINEMENTS + 1):
+    level = 0
+    while left_t.size:
+        mids = 0.5 * (left_t + right_t)
+        mid_f = cdfs_at(mids)
         rise = right_f - left_f
-        steep = (rise > tol).any(axis=0)
+        bend = np.abs(mid_f - 0.5 * (left_f + right_f))
+        steep = ((rise > tol) | (bend > tol / 8.0)).any(axis=0)
         if not steep.any():
             break
-        left_t, right_t = left_t[steep], right_t[steep]
-        left_f, right_f, rise = left_f[:, steep], right_f[:, steep], rise[:, steep]
-        mids = 0.5 * (left_t + right_t)
+        left_t, right_t, mids = left_t[steep], right_t[steep], mids[steep]
+        left_f, right_f, mid_f, rise = left_f[:, steep], right_f[:, steep], mid_f[:, steep], rise[:, steep]
         split = (mids > left_t) & (mids < right_t)  # False at float resolution
-        if level == MAX_REFINEMENTS:
-            split[:] = False
+        if level >= MAX_REFINEMENTS:
+            split &= left_t == 0.0
         unresolved += _crossing_bound(rise[:, ~split], index)
         if not split.any():
             break
         left_t, right_t, mids = left_t[split], right_t[split], mids[split]
-        left_f, right_f = left_f[:, split], right_f[:, split]
-        mid_f = cdfs_at(mids)
+        left_f, right_f, mid_f = left_f[:, split], right_f[:, split], mid_f[:, split]
+        level += 1
         points += mids.size
         if len(ids) * (2 * points - 1) > budget:
             raise ValueError(
@@ -434,11 +471,49 @@ def _quadrature_grid(events: Dict[str, Dict[str, Any]], groups: List[List[List[s
     return times[order], np.concatenate([base] + new_cdfs, axis=1)[:, order], unresolved
 
 
+def _bend_estimate(fine_cdf: Dict[str, np.ndarray], groups: List[List[List[str]]]) -> float:
+    """Error of the coarse grid where a CDF bends: in one interval, the
+    Stieltjes step for G_k = int G_{k-1} dF_k is off by about (bend of
+    G_{k-1}) x (rise of F_k) + (rise of G_{k-1}) x (bend of F_k), with
+    bend = |value at the midpoint - mean of the ends|. Where a step or a kink
+    is left inside an interval (a narrow tail at the mission time), the
+    trapezoidal error is not second order and |P_fine - P_coarse| / 3 can
+    miss it; this term does not."""
+    total = 0.0
+    for inputs in groups:
+        rise, bend = [], []
+        for ids in inputs:
+            r = np.zeros((next(iter(fine_cdf.values())).size - 1) // 2) if fine_cdf else np.zeros(0)
+            b = r.copy()
+            for eid in ids:
+                f = fine_cdf[eid]
+                r += f[2::2] - f[0:-1:2]
+                b += np.abs(f[1::2] - 0.5 * (f[0:-1:2] + f[2::2]))
+            rise.append(r)
+            bend.append(b)
+        for k in range(1, len(inputs)):
+            total += float(np.sum(bend[k - 1] * rise[k] + rise[k - 1] * bend[k]))
+    return total
+
+
 def _halved(values: np.ndarray, mids: np.ndarray) -> np.ndarray:
     """Interleave grid values with the values at the interval midpoints."""
     out = np.empty(2 * values.size - 1)
     out[0::2] = values
     out[1::2] = mids
+    return out
+
+
+def _wmc_on_grid(bdd: Any, function: Any, cdf: Dict[str, np.ndarray], size: int) -> np.ndarray:
+    """``wmc`` of a BDD on the grid, a slice of points at a time: its memo
+    holds one array per BDD node, so a large subtree (a wide K_OF_N) on the
+    whole grid would hold nodes x points values."""
+    from .builder import wmc
+    chunk = max(64, MAX_WMC_VALUES // max(1, int(function.dag_size)))
+    out = np.empty(size)
+    for start in range(0, size, chunk):
+        part = {nid: values[start:start + chunk] for nid, values in cdf.items()}
+        out[start:start + chunk] = wmc(bdd, function, part)
     return out
 
 
@@ -452,12 +527,25 @@ def _module_pass(nodes: Dict[str, Dict[str, Any]], registry: Dict[str, Dict[str,
     cdf = dict(cdf)
     gate_ids = [str(g["id"]) for g in gates]
     bdd = BDD()
-    bdd.declare(*cdf, *[g for g in gate_ids if g not in cdf])
+    # Variables in the order the tree meets them, as compile_tree declares
+    # them: a K_OF_N built against another order (sorted ids) can pass
+    # through a BDD far larger than its result.
+    order: List[str] = []
+    seen: Set[int] = set()
+    stack = [gates[-1]]  # the outermost gate
+    while stack:
+        node = _resolve(stack.pop(), registry)
+        if node is None or id(node) in seen:
+            continue
+        seen.add(id(node))
+        if str(node.get("id")) in cdf and str(node.get("id")) not in order:
+            order.append(str(node.get("id")))
+        stack.extend(reversed(_children(node)))
+    bdd.declare(*order, *[e for e in cdf if e not in order], *[g for g in gate_ids if g not in cdf])
     for gate in gates:  # innermost first, so nested PAND CDFs exist when needed
         inputs = []
         for child in _children(gate):
-            function = node_to_bdd(bdd, child, registry)
-            inputs.append(np.broadcast_to(np.asarray(wmc(bdd, function, cdf), dtype=float), grid.shape))
+            inputs.append(_wmc_on_grid(bdd, node_to_bdd(bdd, child, registry), cdf, grid.size))
         cdf[str(gate["id"])] = ordered_cdf(inputs)
     at_t = {nid: float(values[-1]) for nid, values in cdf.items()}
     out = {nid: at_t[nid] for nid in gate_ids}
@@ -477,8 +565,10 @@ def quantify_pand(tree: Dict[str, Any], registry: Dict[str, Dict[str, Any]],
     grid: ``steps`` intervals, more where one of its events' CDFs rises
     steeply (see :func:`_quadrature_grid`). A second pass on every other point
     gives a Richardson-extrapolated value (the trapezoidal rule is second
-    order) and ``abs_error_estimate`` = |P_fine - P_coarse| / 3, the estimated
-    error of the fine-grid value before extrapolation."""
+    order) and ``abs_error_estimate``: the estimated error of the fine-grid
+    value before extrapolation, |P_fine - P_coarse| / 3, or more where a CDF
+    still bends within an interval (:func:`_bend_estimate`), plus the bound
+    on unresolved intervals."""
     if isinstance(steps, bool) or not isinstance(steps, int) or steps < 4 or steps % 2:
         raise ValueError("pand_steps must be an even integer >= 4")
     gates = pand_gates(tree, registry)
@@ -497,7 +587,8 @@ def quantify_pand(tree: Dict[str, Any], registry: Dict[str, Dict[str, Any]],
         module_gates = [g for g in gates if str(g["id"]) in members or str(g["id"]) == oid]
         events = {nid: nodes[nid] for nid in sorted(members)
                   if _is_leaf(nodes[nid]) and not _is_house(nodes[nid])}
-        groups = [[sorted(_events_under(child, registry)) for child in _children(g)]
+        rises: Dict[int, Set[str]] = {}
+        groups = [[sorted(_rise_events(child, registry, rises)) for child in _children(g)]
                   for g in module_gates]
         coarse_grid, coarse_cdf, unresolved = _quadrature_grid(events, groups, t, steps, oid)
         mids = 0.5 * (coarse_grid[:-1] + coarse_grid[1:])
@@ -505,16 +596,20 @@ def quantify_pand(tree: Dict[str, Any], registry: Dict[str, Dict[str, Any]],
         fine_cdf = {eid: _halved(coarse_cdf[k], lifetime_cdf(events[eid]["failure_model"], mids, eid))
                     for k, eid in enumerate(events)}
         del coarse_cdf  # the coarse pass reads every other point of the fine arrays
+        bent = _bend_estimate(fine_cdf, groups)
         fine = _module_pass(nodes, registry, module_gates, members, fine_grid, fine_cdf)
         coarse = _module_pass(nodes, registry, module_gates, members, fine_grid[::2],
                               {eid: f[::2] for eid, f in fine_cdf.items()})
         del fine_cdf
         for nid, p_fine in fine.items():
+            if not (math.isfinite(p_fine) and math.isfinite(coarse[nid])):
+                raise ValueError(f"PAND gate '{oid}': the ordered integral of '{nid}' "
+                                 "is not a finite number")
             values[nid] = min(1.0, max(0.0, (4.0 * p_fine - coarse[nid]) / 3.0))
         for gate in module_gates:
             gid = str(gate["id"])
             details[gid] = {"Q": values[gid],
-                            "abs_error_estimate": abs(fine[gid] - coarse[gid]) / 3.0 + unresolved,
+                            "abs_error_estimate": max(abs(fine[gid] - coarse[gid]) / 3.0, bent) + unresolved,
                             "steps": steps, "grid_points": int(fine_grid.size),
                             "mission_time": t}
     return PandResult(gates={str(g["id"]): values[str(g["id"])] for g in gates},

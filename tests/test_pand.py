@@ -249,6 +249,76 @@ def test_unresolvable_intervals_that_cannot_matter_are_bounded(first, exact):
     assert result["assumptions"]["pand"]["TOP"]["abs_error_estimate"] < 1e-6
 
 
+def normal(eid, mu, sigma):
+    return {"id": eid, "failure_model": {"dist": "normal", "mu": mu, "sigma": sigma}}
+
+
+def _normal_then_exponential(mu, sigma, lam, t):
+    """P(T_A < T_B <= t), A normal, B exponential, integrated by parts."""
+    phi = lambda z: 0.5 * math.erfc(-z / math.sqrt(2))
+    return (phi(-mu / sigma) - phi((t - mu) / sigma) * math.exp(-lam * t)
+            + math.exp(-lam * mu + lam * lam * sigma * sigma / 2)
+            * (phi((t - mu) / sigma + lam * sigma) - phi(-mu / sigma + lam * sigma)))
+
+
+@pytest.mark.parametrize("k", [2.0, 3.0, 3.5, 4.0])
+def test_a_narrow_tail_at_the_mission_time_is_refined_or_in_the_estimate(k):
+    # The tail of a narrow distribution rises by less than the rise threshold
+    # within the last interval: the bend criterion refines it, and where it
+    # does not, the estimate covers the error.
+    mu, sigma = T + k * 0.01, 0.01
+    exact = _normal_then_exponential(mu, sigma, 1e-3, T)
+    result = analyze(top(pand("TOP", normal("A", mu, sigma), expo("B", 1e-3))))
+    error = abs(result["Q"] - exact)
+    assert error <= result["assumptions"]["pand"]["TOP"]["abs_error_estimate"]
+    if k <= 3.0:
+        assert error < 2e-2 * exact
+
+
+@pytest.mark.parametrize("steps", [8, 16, 32])
+def test_few_steps_still_resolve_narrow_inputs_and_report_ties(steps):
+    tree = top(pand("TOP", normal("A", 300.0, 1e-3), normal("B", 301.0, 1e-3)))
+    assert analyze(tree, pand_steps=steps)["Q"] == pytest.approx(1.0, abs=1e-9)
+    tie = top(pand("TOP", normal("A", 500.0, 1e-14), normal("B", 500.0, 1e-14)))
+    with pytest.raises(ValueError, match="order of their failures"):
+        analyze(tie, pand_steps=steps)
+
+
+def test_two_inputs_singular_at_zero():
+    weib = lambda eid, beta: {"id": eid, "failure_model": {"dist": "weibull", "beta": beta, "eta": 1.0}}
+    f = 1 - math.exp(-1.0)
+    result = analyze(top(pand("TOP", weib("A", 0.1), weib("B", 0.1)), 1.0))
+    assert result["Q"] == pytest.approx(f * f / 2, rel=1e-9)
+    gammas = top(pand("TOP", {"id": "A", "failure_model": {"dist": "gamma", "alpha": 0.05, "theta": 1.0}},
+                      {"id": "B", "failure_model": {"dist": "gamma", "alpha": 0.1, "theta": 1.0}}), 1.0)
+    assert 0 < analyze(gammas)["Q"] < 1
+
+
+@pytest.mark.parametrize("tree", [
+    pand("TOP", normal("A", 500.0, 1e-14), expo("B", 1e-3), normal("C", 500.0, 1e-14)),
+    pand("TOP", pand("P1", normal("A", 500.0, 1e-14), expo("B", 1e-3)), normal("C", 500.0, 1e-14)),
+])
+def test_ties_between_inputs_that_are_not_consecutive_are_accepted(tree):
+    # B would have to fail within the instant between A and C: probability 0.
+    assert analyze(top(tree))["Q"] < 1e-12
+
+
+def test_subtree_inputs_are_evaluated_in_slices(monkeypatch):
+    from faultree import dynamic
+    tree = top(pand("TOP", {"id": "G", "gate": "K_OF_N", "k": 3, "children": [
+        expo(f"E{i}", 1e-3 * (1 + i)) for i in range(6)]}, expo("C", 1e-3)))
+    whole = analyze(tree)["Q"]
+    monkeypatch.setattr(dynamic, "MAX_WMC_VALUES", 1)  # 64 points at a time
+    assert analyze(tree)["Q"] == pytest.approx(whole, rel=1e-13)
+
+
+def test_the_incomplete_gamma_refuses_a_value_it_cannot_reach():
+    from faultree.dynamic import _lower_gamma_regularized
+    assert _lower_gamma_regularized(1e4, 1e4) == pytest.approx(0.5013298, rel=1e-6)
+    with pytest.raises(ValueError, match="did not converge"):
+        _lower_gamma_regularized(2.5e7, 2.5e7)
+
+
 @pytest.mark.parametrize("model", [{"dist": "normal", "mu": 10.0, "sigma": 2.0},
                                    {"dist": "lognormal", "tmed": 10.0, "s": 1.0}])
 def test_lifetime_cdf_takes_a_scalar(model):

@@ -18,13 +18,14 @@
   independent module from the events' time-to-failure models
   (`failure_model`, `mission_time` on the top event): the inputs' failure-time
   CDFs on a grid of their own per outermost PAND, halved locally where an
-  event's CDF rises steeply (static subtrees through their own BDD), the ordered
+  event's CDF rises steeply or bends (static subtrees through their own BDD,
+  evaluated a slice of the grid at a time), the ordered
   recursion G_k = ∫ G_{k-1} dF_k with trapezoidal Stieltjes sums and
   Richardson extrapolation, then one BDD variable with that probability.
   Nested PANDs, house events and AND/OR/K_OF_N subtrees are allowed inside;
   shared events, XOR/INHIBIT inside, binomial models, cycles through a
-  PAND, probabilities given for events inside one, and inputs that fail
-  within an interval too short for the grid are rejected. A house
+  PAND, probabilities given for events inside one, and consecutive inputs
+  that fail within an interval too short for the grid are rejected. A house
   event that has occurred occurs at time 0. `analyze(..., pand_steps=)` and
   `assumptions["pand"]` (value, error estimate, grid points);
   `quantify_compiled(..., pand=)` reuses a `pand_probabilities` result. New

@@ -642,7 +642,13 @@ def wmc(bdd: BDD, func: Function, var_prob: Dict[str, Any], allow_missing: bool 
             memo[key] = r
         return r
 
-    return rec(func)
+    try:
+        return rec(func)
+    finally:
+        # rec refers to itself, so this frame lives until the cycle collector
+        # runs; with array probabilities the memo would hold one array per
+        # BDD node until then.
+        memo.clear()
 
 
 def normalize_tree(tree: Dict[str, Any]) -> Dict[str, Any]:
