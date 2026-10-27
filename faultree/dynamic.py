@@ -570,7 +570,7 @@ def _wmc_on_grid(bdd: Any, function: Any, cdf: Dict[str, np.ndarray], size: int)
     holds one array per BDD node, so a large subtree (a wide K_OF_N) on the
     whole grid would hold nodes x points values."""
     from .builder import wmc
-    chunk = max(64, MAX_WMC_VALUES // max(1, int(function.dag_size)))
+    chunk = max(256, MAX_WMC_VALUES // max(1, int(function.dag_size)))
     out = np.empty(size)
     for start in range(0, size, chunk):
         part = {nid: values[start:start + chunk] for nid, values in cdf.items()}
@@ -603,26 +603,27 @@ def _module_pass(nodes: Dict[str, Dict[str, Any]], registry: Dict[str, Dict[str,
         # where a CDF still bends within an interval (a step or a narrow tail
         # left inside), the trapezoid is not second order and the
         # fine/coarse difference can miss it.
-        # With bend = value at the midpoint - mean of the ends (signed), the
-        # coarse step's error is about |rise(G) bend(F) - bend(G) rise(F)|
-        # where both CDFs are nearly quadratic over the interval (3/2 of it;
-        # nothing when G and F have the same shape), and all of it for a kink
-        # near an end. Where a CDF bends by more than a 16th of its rise (a
-        # step, a narrow tail), no such cancellation holds: |bend(G)| rise(F)
-        # + rise(G) |bend(F)| bounds it. There the error is not second order
-        # and the fine/coarse difference misses it. An earlier input's error
-        # is carried through each later one: E_k = int E_{k-1} dF_k + local_k.
+        # With bend = |value at the midpoint - mean of the ends|, the coarse
+        # step of G_k = int G_{k-1} dF_k is off by at most about
+        # bend(G) rise(F) + rise(G) bend(F) in an interval: where a CDF has a
+        # step, a kink or a narrow tail inside, the error is not second order
+        # and both grids can make the same error, which the fine/coarse
+        # difference cannot see. (A signed form cancels for inputs of the
+        # same shape, but it equals twice the fine/coarse difference and
+        # misses exactly those errors.) An earlier input's error E_{k-1}(s)
+        # is carried through each later one, E_k = int E_{k-1} dF_k +
+        # local_k, and so is rounding: a CDF stored to eps (one near 1 loses
+        # what it has left to rise) moves G_k by up to about
+        # 4 eps G_{k-1} F_k.
         def rise_bend(a: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-            return a[2::2] - a[0:-1:2], a[1::2] - 0.5 * (a[0:-1:2] + a[2::2])
+            return a[2::2] - a[0:-1:2], np.abs(a[1::2] - 0.5 * (a[0:-1:2] + a[2::2]))
+        eps4 = 4.0 * np.finfo(float).eps
         g = inputs[0]
         carried = np.zeros((grid.size + 1) // 2)
         for f in inputs[1:]:
             (rise_g, bend_g), (rise_f, bend_f) = rise_bend(g), rise_bend(f)
-            rough = (16.0 * np.abs(bend_g) > rise_g) | (16.0 * np.abs(bend_f) > rise_f)
-            local = np.where(rough, np.abs(bend_g) * rise_f + rise_g * np.abs(bend_f),
-                             np.abs(rise_g * bend_f - bend_g * rise_f))
-            step = 0.5 * (carried[:-1] + carried[1:]) * rise_f + local
-            carried = np.concatenate(([0.0], np.cumsum(step)))
+            step = 0.5 * (carried[:-1] + carried[1:]) * rise_f + bend_g * rise_f + rise_g * bend_f
+            carried = np.concatenate(([0.0], np.cumsum(step))) + eps4 * g[0::2] * f[0::2]
             g = ordered_cdf([g, f])
         cdf[str(gate["id"])] = g
         bends[str(gate["id"])] = float(carried[-1])
