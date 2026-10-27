@@ -319,6 +319,24 @@ def test_the_estimate_is_not_inflated_on_smooth_inputs():
     assert result["assumptions"]["pand"]["TOP"]["abs_error_estimate"] < 1e-3 * result["Q"]
 
 
+def test_the_estimate_is_not_inflated_on_or_inputs():
+    wide = lambda gid: {"id": gid, "gate": "OR", "children": [expo(f"{gid}{i}", 1e-6) for i in range(300)]}
+    result = analyze(top(pand("TOP", wide("A"), wide("B"), wide("C"))))
+    assert result["assumptions"]["pand"]["TOP"]["abs_error_estimate"] < 1e-6 * result["Q"]
+
+
+def test_a_kink_near_an_interval_end_stays_in_the_estimate():
+    # Uniform CDFs have corners; one just inside a coarse interval makes the
+    # trapezoid first order there, which the fine/coarse difference misses.
+    a, b = (730.2832578147352, 1638.629329572108), (844.0564063336557, 1658.366151434936)
+    unif = lambda eid, lo, hi: {"id": eid, "failure_model": {"dist": "uniform", "a": lo, "b": hi}}
+    # P(T_A < T_B <= T) = int_{aB}^{T} (s - aA) / (bA - aA) ds / (bB - aB)
+    exact = ((T - a[0]) ** 2 - (b[0] - a[0]) ** 2) / 2 / (a[1] - a[0]) / (b[1] - b[0])
+    result = analyze(top(pand("TOP", unif("A", *a), unif("B", *b))), pand_steps=64)
+    error = abs(result["Q"] - exact)
+    assert error <= result["assumptions"]["pand"]["TOP"]["abs_error_estimate"]
+
+
 def test_nested_pand_variables_follow_the_tree_order():
     import time
     n = 16

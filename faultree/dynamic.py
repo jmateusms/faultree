@@ -373,7 +373,8 @@ def _contains_pand(node: Dict[str, Any], registry: Dict[str, Dict[str, Any]]) ->
 
 
 def _input_rise(node: Dict[str, Any], registry: Dict[str, Dict[str, Any]],
-                low: Dict[str, np.ndarray], high: Dict[str, np.ndarray], bdd: Any) -> Any:
+                low: Dict[str, np.ndarray], high: Dict[str, np.ndarray], bdd: Any,
+                functions: Dict[int, Any]) -> Any:
     """How much an input's CDF rises across intervals, from its events' CDFs
     at their ends (``low``, ``high``): exact for an event or a static subtree
     (its BDD at both ends), and for a PAND gate at most what its last input
@@ -388,10 +389,12 @@ def _input_rise(node: Dict[str, Any], registry: Dict[str, Dict[str, Any]],
         return high[eid] - low[eid]
     if is_pand(current):
         children = _children(current)
-        return _input_rise(children[-1], registry, low, high, bdd) if children else 0.0
+        return _input_rise(children[-1], registry, low, high, bdd, functions) if children else 0.0
     if _contains_pand(current, registry):
         return sum((high[e] - low[e] for e in _rise_events(current, registry)), 0.0)
-    function = node_to_bdd(bdd, current, registry)
+    if id(current) not in functions:
+        functions[id(current)] = node_to_bdd(bdd, current, registry)
+    function = functions[id(current)]
     return np.asarray(wmc(bdd, function, high)) - np.asarray(wmc(bdd, function, low))
 
 
@@ -442,12 +445,12 @@ def _rise_events(node: Dict[str, Any], registry: Dict[str, Dict[str, Any]],
 
 def _quadrature_grid(events: Dict[str, Dict[str, Any]], rise_of: Any,
                      t: float, steps: int, gate_id: str
-                     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
-    """The coarse grid of one PAND module on [0, t], its events' CDFs on it
-    (events x points, rows in the order of ``events``), the midpoints of its
-    intervals and the CDFs there (the fine grid's other points), and a bound
-    on the error of intervals left unresolved. ``rise_of(low, high)`` gives,
-    for event CDFs at the ends of some intervals, every input's rise there.
+                     ) -> Tuple[np.ndarray, np.ndarray, float]:
+    """The fine grid of one PAND module on [0, t] (the coarse grid with every
+    interval halved: the coarse grid is every other point), its events' CDFs
+    on it (events x points, rows in the order of ``events``), and a bound on
+    the error of intervals left unresolved. ``rise_of(low, high)`` gives, for
+    event CDFs at the ends of some intervals, every input's rise there.
 
     The grid starts as steps/2 equal intervals. An interval is halved while
     some event's CDF rises by more than tol = REFINE_RISE / steps across it,
@@ -533,20 +536,33 @@ def _quadrature_grid(events: Dict[str, Dict[str, Any]], rise_of: Any,
             f"PAND gate '{gate_id}': inputs fail within the same interval of time "
             f"too short for the grid (mission time {t:g}); the order of their failures "
             f"cannot be resolved (possible error up to {unresolved:.2g})")
+    del left_f, right_f, mid_f  # they may hold views of base
+    # Fine grid: coarse point j at 2j, the midpoint of its interval at 2j + 1;
+    # each block of CDFs is written in place and freed.
     times = np.concatenate([grid] + new_times)
-    order = np.argsort(times, kind="stable")
-    by_left = np.argsort(np.concatenate(kept_t), kind="stable")
-    return (times[order], np.concatenate([base] + new_cdfs, axis=1)[:, order],
-            np.concatenate(kept_mid)[by_left], np.concatenate(kept_f, axis=1)[:, by_left],
-            unresolved)
+    rank = np.empty(times.size, dtype=np.intp)
+    rank[np.argsort(times, kind="stable")] = np.arange(times.size)
+    lefts = np.concatenate(kept_t)
+    mid_rank = np.empty(lefts.size, dtype=np.intp)
+    mid_rank[np.argsort(lefts, kind="stable")] = np.arange(lefts.size)
+    fine_t = np.empty(2 * times.size - 1)
+    fine_t[2 * rank] = times
+    fine_t[2 * mid_rank + 1] = np.concatenate(kept_mid)
+    fine_f = np.empty((len(ids), fine_t.size))
 
+    def place(blocks: List[np.ndarray], columns: np.ndarray) -> None:
+        start = 0
+        while blocks:
+            block = blocks.pop(0)
+            fine_f[:, columns[start:start + block.shape[1]]] = block
+            start += block.shape[1]
 
-def _halved(values: np.ndarray, mids: np.ndarray) -> np.ndarray:
-    """Interleave grid values with the values at the interval midpoints."""
-    out = np.empty(2 * values.size - 1)
-    out[0::2] = values
-    out[1::2] = mids
-    return out
+    coarse_blocks = [base] + new_cdfs
+    del base
+    new_cdfs.clear()
+    place(coarse_blocks, 2 * rank)
+    place(kept_f, 2 * mid_rank + 1)
+    return fine_t, fine_f, unresolved
 
 
 def _wmc_on_grid(bdd: Any, function: Any, cdf: Dict[str, np.ndarray], size: int) -> np.ndarray:
@@ -554,7 +570,7 @@ def _wmc_on_grid(bdd: Any, function: Any, cdf: Dict[str, np.ndarray], size: int)
     holds one array per BDD node, so a large subtree (a wide K_OF_N) on the
     whole grid would hold nodes x points values."""
     from .builder import wmc
-    chunk = max(512, MAX_WMC_VALUES // max(1, int(function.dag_size)))
+    chunk = max(64, MAX_WMC_VALUES // max(1, int(function.dag_size)))
     out = np.empty(size)
     for start in range(0, size, chunk):
         part = {nid: values[start:start + chunk] for nid, values in cdf.items()}
@@ -587,15 +603,29 @@ def _module_pass(nodes: Dict[str, Dict[str, Any]], registry: Dict[str, Dict[str,
         # where a CDF still bends within an interval (a step or a narrow tail
         # left inside), the trapezoid is not second order and the
         # fine/coarse difference can miss it.
+        # With bend = value at the midpoint - mean of the ends (signed), the
+        # coarse step's error is about |rise(G) bend(F) - bend(G) rise(F)|
+        # where both CDFs are nearly quadratic over the interval (3/2 of it;
+        # nothing when G and F have the same shape), and all of it for a kink
+        # near an end. Where a CDF bends by more than a 16th of its rise (a
+        # step, a narrow tail), no such cancellation holds: |bend(G)| rise(F)
+        # + rise(G) |bend(F)| bounds it. There the error is not second order
+        # and the fine/coarse difference misses it. An earlier input's error
+        # is carried through each later one: E_k = int E_{k-1} dF_k + local_k.
         def rise_bend(a: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-            return a[2::2] - a[0:-1:2], np.abs(a[1::2] - 0.5 * (a[0:-1:2] + a[2::2]))
-        g, term = inputs[0], 0.0
+            return a[2::2] - a[0:-1:2], a[1::2] - 0.5 * (a[0:-1:2] + a[2::2])
+        g = inputs[0]
+        carried = np.zeros((grid.size + 1) // 2)
         for f in inputs[1:]:
             (rise_g, bend_g), (rise_f, bend_f) = rise_bend(g), rise_bend(f)
-            term += float(np.sum(bend_g * rise_f + rise_g * bend_f))
+            rough = (16.0 * np.abs(bend_g) > rise_g) | (16.0 * np.abs(bend_f) > rise_f)
+            local = np.where(rough, np.abs(bend_g) * rise_f + rise_g * np.abs(bend_f),
+                             np.abs(rise_g * bend_f - bend_g * rise_f))
+            step = 0.5 * (carried[:-1] + carried[1:]) * rise_f + local
+            carried = np.concatenate(([0.0], np.cumsum(step)))
             g = ordered_cdf([g, f])
         cdf[str(gate["id"])] = g
-        bends[str(gate["id"])] = term
+        bends[str(gate["id"])] = float(carried[-1])
     at_t = {nid: float(values[-1]) for nid, values in cdf.items()}
     out = {nid: at_t[nid] for nid in gate_ids}
     for nid in members:
@@ -616,8 +646,8 @@ def quantify_pand(tree: Dict[str, Any], registry: Dict[str, Dict[str, Any]],
     gives a Richardson-extrapolated value (the trapezoidal rule is second
     order) and ``abs_error_estimate``: the estimated error of the fine-grid
     value before extrapolation, |P_fine - P_coarse| / 3, or more where an
-    input's CDF still bends within an interval (see :func:`_module_pass`),
-    plus the bound on unresolved intervals."""
+    input's CDF bends within an interval (see :func:`_module_pass`) and at
+    least the rounding of the sums, plus the bound on unresolved intervals."""
     if isinstance(steps, bool) or not isinstance(steps, int) or steps < 4 or steps % 2:
         raise ValueError("pand_steps must be an even integer >= 4")
     gates = pand_gates(tree, registry)
@@ -638,20 +668,22 @@ def quantify_pand(tree: Dict[str, Any], registry: Dict[str, Dict[str, Any]],
                   if _is_leaf(nodes[nid]) and not _is_house(nodes[nid])}
         ids = list(events)
 
+        rising: Dict[str, Any] = {}  # one BDD and its input functions per module
+
         def rise_of(low: np.ndarray, high: np.ndarray) -> List[List[Any]]:
-            from dd.autoref import BDD
-            bdd = BDD()
-            bdd.declare(*_tree_order(outer, registry, set(ids)))
+            if not rising:
+                from dd.autoref import BDD
+                rising["bdd"], rising["functions"] = BDD(), {}
+                rising["bdd"].declare(*_tree_order(outer, registry, set(ids)))
             lo = {e: low[k] for k, e in enumerate(ids)}
             hi = {e: high[k] for k, e in enumerate(ids)}
-            return [[_input_rise(child, registry, lo, hi, bdd) for child in _children(g)]
-                    for g in module_gates]
+            return [[_input_rise(child, registry, lo, hi, rising["bdd"], rising["functions"])
+                     for child in _children(g)] for g in module_gates]
 
-        coarse_grid, coarse_cdf, mids, mid_cdf, unresolved = _quadrature_grid(
-            events, rise_of, t, steps, oid)
-        fine_grid = _halved(coarse_grid, mids)
-        fine_cdf = {eid: _halved(coarse_cdf[k], mid_cdf[k]) for k, eid in enumerate(ids)}
-        del coarse_cdf, mid_cdf  # the coarse pass reads every other point of the fine arrays
+        fine_grid, fine_matrix, unresolved = _quadrature_grid(events, rise_of, t, steps, oid)
+        # Rows are views; the coarse pass reads every other point of them.
+        fine_cdf = {eid: fine_matrix[k] for k, eid in enumerate(ids)}
+        del fine_matrix
         bends: Dict[str, float] = {}
         fine = _module_pass(nodes, registry, module_gates, members, fine_grid, fine_cdf, bends)
         coarse = _module_pass(nodes, registry, module_gates, members, fine_grid[::2],
@@ -662,13 +694,15 @@ def quantify_pand(tree: Dict[str, Any], registry: Dict[str, Dict[str, Any]],
                 raise ValueError(f"PAND gate '{oid}': the ordered integral of '{nid}' "
                                  "is not a finite number")
             values[nid] = min(1.0, max(0.0, (4.0 * p_fine - coarse[nid]) / 3.0))
+        roundoff = 8.0 * math.sqrt(fine_grid.size) * np.finfo(float).eps  # of the sums
         for gate in module_gates:
             gid = str(gate["id"])
             # A gate's bend term, and those of the PAND gates inside it.
             inside_gate = _members_of(gate, registry)
             bent = bends[gid] + sum(v for g, v in bends.items() if g in inside_gate)
             details[gid] = {"Q": values[gid],
-                            "abs_error_estimate": max(abs(fine[gid] - coarse[gid]) / 3.0, bent) + unresolved,
+                            "abs_error_estimate": max(abs(fine[gid] - coarse[gid]) / 3.0, bent,
+                                                      roundoff * abs(fine[gid])) + unresolved,
                             "steps": steps, "grid_points": int(fine_grid.size),
                             "mission_time": t}
     return PandResult(gates={str(g["id"]): values[str(g["id"])] for g in gates},

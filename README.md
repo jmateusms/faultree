@@ -206,7 +206,8 @@ independent module and puts it into the BDD as one variable:
   1e-3 there) is not refined, so a very small P(PAND) can have a large
   relative error, which the estimate shows (a larger `pand_steps` resolves
   it); and two consecutive inputs whose CDFs are concentrated at time 0
-  (Weibull or gamma shapes of about 0.02 or less) cannot be ordered and
+  (gamma shapes of about 0.03 or less, Weibull shapes much smaller,
+  depending on the scale next to the mission time) cannot be ordered and
   are an error.
 - `analyze(..., pand_steps=4096)` sets the uniform grid; `assumptions["pand"]`
   reports each gate's value, an error estimate and the number of grid
