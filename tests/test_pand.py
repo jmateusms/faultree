@@ -312,6 +312,38 @@ def test_subtree_inputs_are_evaluated_in_slices(monkeypatch):
     assert analyze(tree)["Q"] == pytest.approx(whole, rel=1e-13)
 
 
+def test_the_estimate_is_not_inflated_on_smooth_inputs():
+    tree = top(pand("TOP", {"id": "G", "gate": "AND", "children": [expo(f"E{i}", 1e-3) for i in range(30)]},
+                    expo("X", 1e-3)))
+    result = analyze(tree)
+    assert result["assumptions"]["pand"]["TOP"]["abs_error_estimate"] < 1e-3 * result["Q"]
+
+
+def test_nested_pand_variables_follow_the_tree_order():
+    import time
+    n = 16
+    kids = [{"id": f"G{i}", "gate": "AND", "children": [
+        expo(f"E{i}", 1e-3), pand(f"P{i}", expo(f"A{i}", 1e-3), expo(f"B{i}", 2e-3))]} for i in range(n)]
+    tree = top(pand("TOP", {"id": "K", "gate": "K_OF_N", "k": n // 2, "children": kids}, expo("X", 1e-3)))
+    started = time.perf_counter()
+    analyze(tree)
+    assert time.perf_counter() - started < 10  # about 70 s with nested gates declared last
+
+
+def test_a_tie_inside_a_static_input_that_cannot_matter_is_accepted():
+    # The AND fails at about 900, so A tying with C at 500 cannot change the order.
+    tree = top(pand("TOP", {"id": "G", "gate": "AND", "children": [
+        normal("A", 500.0, 1e-14), normal("B", 900.0, 1.0)]}, normal("C", 500.0, 1e-14)))
+    assert analyze(tree)["Q"] < 1e-12
+
+
+def test_a_gamma_that_cannot_be_evaluated_names_its_event():
+    tree = top(pand("TOP", {"id": "HUGE", "failure_model": {"dist": "gamma", "alpha": 2.5e7, "theta": 4e-5}},
+                    expo("B", 1e-3)))
+    with pytest.raises(ValueError, match="Event 'HUGE'"):
+        analyze(tree)
+
+
 def test_the_incomplete_gamma_refuses_a_value_it_cannot_reach():
     from faultree.dynamic import _lower_gamma_regularized
     assert _lower_gamma_regularized(1e4, 1e4) == pytest.approx(0.5013298, rel=1e-6)

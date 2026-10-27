@@ -201,7 +201,13 @@ independent module and puts it into the BDD as one variable:
   more where a CDF still bends within an interval. An interval the grid
   cannot resolve (a nearly deterministic failure time) adds a bound to the
   estimate; when consecutive inputs fail within such an interval, so that
-  their order cannot be resolved, it is an error.
+  their order cannot be resolved, it is an error. Two limits: a narrow
+  distribution whose tail just reaches the mission time (mass below about
+  1e-3 there) is not refined, so a very small P(PAND) can have a large
+  relative error, which the estimate shows (a larger `pand_steps` resolves
+  it); and two consecutive inputs whose CDFs are concentrated at time 0
+  (Weibull or gamma shapes of about 0.02 or less) cannot be ordered and
+  are an error.
 - `analyze(..., pand_steps=4096)` sets the uniform grid; `assumptions["pand"]`
   reports each gate's value, an error estimate and the number of grid
   points. The PAND id is the event in cut sets, importance and what-if;
