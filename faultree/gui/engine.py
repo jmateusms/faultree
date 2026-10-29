@@ -21,8 +21,10 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 import numpy as np
 
 from ..builder import (
+    _is_house,
     _is_leaf,
     analyze,
+    pand_probabilities,
     collect_basic_events,
     compile_tree,
     gather_nodes,
@@ -81,8 +83,9 @@ def _example_path(name: str) -> Path:
 def _count_nodes(tree: Dict[str, Any]) -> Tuple[int, int]:
     nodes: Dict[str, Dict[str, Any]] = {}
     gather_nodes(tree, nodes)
-    basic = sum(1 for node in nodes.values() if _is_leaf(node))
-    return basic, len(nodes) - basic
+    leaves = [node for node in nodes.values() if _is_leaf(node)]
+    basic = sum(1 for node in leaves if not _is_house(node))
+    return basic, len(nodes) - len(leaves)
 
 
 def list_examples() -> List[Dict[str, Any]]:
@@ -292,6 +295,9 @@ def analyze_point(tree: Any, *, success_mode: bool = False, max_order: int = 6,
     result = analyze(tree, None, success_mode=success_mode)
     top_id = str(tree["id"])
     inputs = {eid: float(p) for eid, p in var_probs_from_tree(tree).items()}
+    # A PAND gate is one BDD variable whose value comes from its module.
+    for gate_id, value in pand_probabilities(tree).gates.items():
+        inputs[gate_id] = 1.0 - value if success_mode else value
     q = float(result["Q"])
     compiled = compile_tree(tree, success_mode=success_mode, include_expressions=False)
     out = {

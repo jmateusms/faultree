@@ -671,3 +671,234 @@ def test_the_failure_model_example_is_consistent():
         assert got["after"][eid] == pytest.approx(prob, rel=1e-11), eid
     result = engine.analyze_point(tree)
     assert result["Q"] == pytest.approx(analyze(tree)["Q"])
+
+
+# --------------------------------------------- NUREG-0492 symbols (GUI side) --
+def test_nureg_symbols_example_runs_point_analysis_and_what_if():
+    tree = load("nureg_symbols.json")
+    out = strict_json(engine.analyze_point(tree))
+    assert out["Q"] == pytest.approx(analyze(tree)["Q"], rel=1e-15)
+    assert "MAINT_A" not in out["basic_events"] and "RV" in out["basic_events"]
+    assert out["probabilities"]["MAINT_A"] == 0.0
+    assert "MAINT_A" not in out["importance"] and "MAINT_A" not in out["inputs"]
+    assert out["cut_sets"]["available"] and ["PCTRL", "RV"] in [r["events"] for r in out["cut_sets"]["rows"]]
+    forced = engine.what_if(tree, {"RV": "failed"})
+    overp = 1 - (1 - 0.002) * (1 - 0.001)
+    assert forced["probabilities"]["RUPT"] == pytest.approx(overp, rel=1e-12)
+    assert forced["base_Q"] == pytest.approx(out["Q"], rel=1e-15)
+    with pytest.raises(GuiError, match="MAINT_A"):  # a house event is a switch, not forced
+        engine.what_if(tree, {"MAINT_A": "failed"})
+
+
+@needs_node
+def test_nureg_symbols_round_trip_through_the_editor_model():
+    tree = engine.import_tree(load("nureg_symbols.json"))["tree"]
+    got = run_model_js(f"""
+        const {{ doc, notes }} = M.importTree({json.dumps(tree)});
+        console.log(JSON.stringify({{ notes, issues: M.validate(doc), kinds: Object.fromEntries(
+          Object.entries(doc.events).map(([id, e]) => [id, e.kind])), basic: M.basicIds(doc),
+          saved: M.exportTree(doc), engine: M.exportTree(doc, {{ engine: true }}), flat: M.exportFlat(doc) }}));""")
+    assert got["notes"] == [] and got["issues"] == []
+    assert got["kinds"] == {"PCTRL": "basic", "OPER": "basic", "RV": "conditioning", "PUMP_A": "basic",
+                            "MAINT_A": "house", "PUMP_B": "basic", "POWER": "undeveloped"}
+    assert "MAINT_A" not in got["basic"] and len(got["basic"]) == 6
+    saved, engine_tree = got["saved"], got["engine"]
+    assert saved["children"][0]["gate"] == "INHIBIT"
+    house = saved["children"][1]["children"][0]["children"][1]
+    assert house == {"id": "MAINT_A", "name": "Train A in maintenance", "name_pt": "Trem A em manutenção",
+                     "event_type": "house", "gate": None, "state": False, "children": []}
+    engine_house = engine_tree["children"][1]["children"][0]["children"][1]
+    assert "prob" not in engine_house and engine_house["state"] is False
+    assert engine_tree["children"][0]["children"][1]["event_type"] == "conditioning"
+    q = analyze(tree)["Q"]
+    assert analyze(saved)["Q"] == pytest.approx(q, rel=1e-15)
+    assert analyze(engine_tree)["Q"] == pytest.approx(q, rel=1e-15)
+    be = {b["label"]: b for b in got["flat"]["be_nodes"]}
+    assert be["MAINT_A"] == {"label": "MAINT_A", "event_type": "house", "state": False}
+    assert be["RV"] == {"label": "RV", "event_type": "conditioning", "prob": 0.05}
+    assert be["POWER"] == {"label": "POWER", "event_type": "undeveloped", "prob": 0.0005}
+    assert be["PUMP_A"] == {"label": "PUMP_A", "prob": 0.003}
+    assert {"label": "RUPT", "gate": "INHIBIT", "branches": ["OVERP", "RV"]} in got["flat"]["ft_nodes"]
+    flat = engine.import_tree(got["flat"])["tree"]
+    assert analyze(flat)["Q"] == pytest.approx(q, rel=1e-15)
+    # the flat file comes back with the same kinds and state
+    again = run_model_js(f"""
+        const {{ doc }} = M.importTree({json.dumps(flat)});
+        console.log(JSON.stringify(Object.fromEntries(Object.entries(doc.events).map(([id, e]) => [id, [e.kind, e.state ?? null]]))));""")
+    assert again["MAINT_A"] == ["house", False] and again["RV"] == ["conditioning", None]
+    assert again["POWER"] == ["undeveloped", None]
+
+
+@needs_node
+def test_inhibit_and_conditioning_issues_and_house_events_without_probability():
+    got = run_model_js("""
+        const ev = (kind, extra = {}) => ({ name: "", prob: 0.1, kind, dist: null, samples: null, ...extra });
+        const mk = (children, events) => ({ root: M.gateNode("TOP", "", "OR", children), events, meta: {} });
+        const inhibit = (id, ...ids) => M.gateNode(id, "", "INHIBIT", ids.map(M.leafNode));
+        const out = {};
+        out.ok = M.validate(mk([inhibit("I", "A", "C")], { A: ev("basic"), C: ev("conditioning") }));
+        out.three = M.validate(mk([inhibit("I", "A", "B", "C")], { A: ev("basic"), B: ev("basic"), C: ev("conditioning") }));
+        out.noCond = M.validate(mk([inhibit("I", "A", "B")], { A: ev("basic"), B: ev("basic") }));
+        out.outside = M.validate(mk([M.leafNode("A"), M.leafNode("C")], { A: ev("basic"), C: ev("conditioning") }));
+        out.twice = M.validate(mk([inhibit("I1", "A", "C"), inhibit("I2", "B", "C")], { A: ev("basic"), B: ev("basic"), C: ev("conditioning") }));
+        out.house = M.validate(mk([M.leafNode("A"), M.leafNode("H")], { A: ev("basic"), H: ev("house", { prob: null, state: true }) }));
+        // a gate made INHIBIT over its one input gets a conditioning event (undo restores both)
+        const d = mk([M.gateNode("G", "", "INHIBIT", [M.leafNode("A")])], { A: ev("basic") });
+        const added = M.ensureCondition(d, d.root.children[0]);
+        out.added = [d.events[added.id].kind, M.validate(d), M.ensureCondition(d, d.root.children[0])];
+        // a house event drops what it does not take and is never sent with a probability
+        const e = ev("basic", { model: { dist: "exponential", lambda: 1e-3 }, dist: { dist: "lognormal", median: 0.1, ef: 3 } });
+        M.setKind(e, "house");
+        const h = mk([M.leafNode("A"), M.leafNode("H")], { A: ev("basic"), H: e });
+        out.setKind = [e.state, e.model, e.dist, M.exportTree(h, { engine: true }).children[1]];
+        out.applied = M.applyProbs(h, { H: 0.5, A: 0.2 });
+        console.log(JSON.stringify(out));""")
+    inhibit = "INHIBIT gate {} needs exactly two inputs: the input event and one conditioning event."
+    assert got["ok"] == []
+    assert got["three"] == [inhibit.format("I")]
+    assert got["noCond"] == [inhibit.format("I")]
+    assert got["outside"] == ["Conditioning event C must be an input of an INHIBIT gate."]
+    assert got["twice"] == ["Conditioning event C appears more than once; it belongs to one INHIBIT gate"
+                            " (“Make independent” gives a copy)."]
+    assert got["house"] == []
+    assert got["added"] == ["conditioning", [], None]
+    state, model, dist, node = got["setKind"]
+    assert (state, model, dist) == (False, None, None)
+    assert node == {"id": "H", "name": "", "event_type": "house", "gate": None, "state": False, "children": []}
+    assert got["applied"] == ["House events take a state, not a probability; these columns were ignored: H."]
+
+
+# ------------------------------------------------ PRIORITY AND (GUI side) --
+def _pand_tree():
+    """OR(PAND(A, OR(B, C)), D, clone of the PAND), mission time 1000 h."""
+    def timed(eid, model):
+        return {"id": eid, "prob": 0.1, "failure_model": model}
+    return {"id": "TOP", "gate": "OR", "mission_time": 1000, "time_unit": "h", "children": [
+        {"id": "P1", "name": "Sequence", "gate": "PAND", "children": [
+            timed("A", {"dist": "exponential", "lambda": 1e-4}),
+            {"id": "G2", "gate": "OR", "children": [
+                timed("B", {"dist": "weibull", "beta": 2, "eta": 3000}),
+                timed("C", {"dist": "poisson", "lambda": 2e-4, "k": 1})]}]},
+        leaf("D", 0.001), {"ref": "P1"}]}
+
+
+def test_pand_tree_runs_point_analysis_what_if_and_uncertainty():
+    tree = _pand_tree()
+    out = strict_json(engine.analyze_point(tree))
+    q = analyze(tree)["Q"]
+    assert out["Q"] == pytest.approx(q, rel=1e-15)
+    assert out["basic_events"] == ["P1", "D"]  # the PAND gate is one BDD variable
+    assert set(out["importance"]) == {"P1", "D"} and out["bdd"]["ordering"] == ["P1", "D"]
+    assert {node["var"] for node in out["bdd"]["graph"]["nodes"]} == {"P1", "D"}
+    assert sorted(r["events"] for r in out["cut_sets"]["rows"]) == [["D"], ["P1"]]
+    assert {"A", "B", "C", "G2"} <= set(out["probabilities"])
+    assert out["probabilities"]["A"] == pytest.approx(-math.expm1(-0.1), rel=1e-9)
+    pand = out["assumptions"]["pand"]["P1"]
+    assert pand["Q"] == pytest.approx(out["probabilities"]["P1"]) and 0 <= pand["abs_error_estimate"] < 1e-6
+    assert out["expression"] == "OR(PAND(A, OR(B, C)), D, PAND(A, OR(B, C)))"
+    failed = engine.what_if(tree, {"P1": "failed"})
+    assert failed["Q"] == 1.0 and failed["base_Q"] == pytest.approx(q, rel=1e-15)
+    assert engine.what_if(tree, {"P1": "working"})["Q"] == pytest.approx(0.001, rel=1e-12)
+    assert failed["probabilities"]["A"] == pytest.approx(out["probabilities"]["A"])
+    with pytest.raises(GuiError, match="'A' is not a basic event"):  # inside the module
+        engine.what_if(tree, {"A": "failed"})
+    unc = strict_json(engine.analyze_uncertainty(
+        tree, distributions={"D": {"dist": "lognormal", "median": 0.001, "ef": 3}}, n=200))
+    assert set(unc["importance"]) == {"P1", "D"} and set(unc["inputs"]) == {"D"}
+    p1 = unc["probabilities"]["P1"]
+    assert p1["p05"] == p1["p95"] == pytest.approx(out["probabilities"]["P1"])  # keeps its point value
+    with pytest.raises(GuiError, match="'A' is not a basic event"):
+        engine.analyze_uncertainty(tree, distributions={"A": {"dist": "lognormal", "median": 0.1, "ef": 3}}, n=10)
+
+
+@needs_node
+def test_pand_round_trips_through_the_editor_model():
+    tree = engine.import_tree(_pand_tree())["tree"]
+    got = run_model_js(f"""
+        const {{ doc, notes }} = M.importTree({json.dumps(tree)});
+        M.refreshModels(doc);
+        const res = {{ notes, issues: M.validate(doc), members: Object.fromEntries(M.pandMembers(doc)),
+          vars: [...M.bddVars(doc)], saved: M.exportTree(doc), engine: M.exportTree(doc, {{ engine: true }}),
+          flat: M.exportFlat(doc) }};
+        M.refreshModels(doc, true);
+        res.engineR = M.exportTree(doc, {{ engine: true }});
+        console.log(JSON.stringify(res));""")
+    assert got["notes"] == [] and got["issues"] == []
+    assert got["members"] == {"A": "P1", "B": "P1", "C": "P1", "G2": "P1"}
+    assert sorted(got["vars"]) == ["D", "P1"]
+    saved, engine_tree = got["saved"], got["engine"]
+    pand = saved["children"][0]
+    assert pand["gate"] == "PAND" and [c["id"] for c in pand["children"]] == ["A", "G2"]
+    assert saved["children"][2] == {"ref": "P1"}
+    # the engine gets the failure models it needs (inside the PAND only) and t
+    assert engine_tree["mission_time"] == 1000 and "time_unit" not in engine_tree
+    assert engine_tree["children"][0]["children"][0]["failure_model"] == {"dist": "exponential", "lambda": 1e-4}
+    assert "failure_model" not in engine_tree["children"][1]
+    q = analyze(tree)["Q"]
+    for t in (saved, engine_tree, engine.import_tree(got["flat"])["tree"]):
+        assert engine.analyze_point(t)["Q"] == pytest.approx(q, rel=1e-12)
+    # success mode: the inputs are reliabilities, the PAND module still uses the models
+    r = engine.analyze_point(got["engineR"], success_mode=True)
+    assert r["Q"] == pytest.approx(analyze(tree, success_mode=True)["Q"], rel=1e-12)
+    assert r["probabilities"]["P1"] == pytest.approx(1 - analyze(tree)["probabilities"]["P1"], rel=1e-12)
+    flat = got["flat"]
+    assert {"label": "P1", "gate": "PAND", "branches": ["A", "G2"]} in flat["ft_nodes"]
+    assert (flat["mission_time"], flat["time_unit"]) == (1000, "h")
+    assert {b["label"]: b.get("failure_model", {}).get("dist") for b in flat["be_nodes"]} == {
+        "A": "exponential", "B": "weibull", "C": "poisson", "D": None}
+    again = run_model_js(f"""
+        const {{ doc }} = M.importTree({json.dumps(engine.import_tree(flat)["tree"])});
+        console.log(JSON.stringify({{ issues: M.validate(doc), time: doc.meta.mission_time,
+          gate: M.gates(doc).get("P1").gate, model: doc.events.B.model }}));""")
+    assert again == {"issues": [], "time": 1000, "gate": "PAND",
+                     "model": {"dist": "weibull", "beta": 2, "eta": 3000}}
+
+
+@needs_node
+def test_pand_issues_and_new_inputs_get_time_to_failure_models():
+    got = run_model_js("""
+        const ex = { dist: "exponential", lambda: 1e-4 };
+        const ev = (extra = {}) => ({ name: "", prob: 0.1, kind: "basic", dist: null, samples: null, model: ex, ...extra });
+        const mk = (children, events, meta = { mission_time: 1000 }) => ({ root: M.gateNode("TOP", "", "OR", children), events, meta });
+        const P = (id, ...kids) => M.gateNode(id, "", "PAND", kids), G = (id, gate, ...kids) => M.gateNode(id, "", gate, kids);
+        const L = M.leafNode, R = M.refNode;
+        const out = {};
+        out.ok = M.validate(mk([P("P1", L("A"), G("G", "AND", L("B"), L("H"))), L("D"), R("P1"), L("H")],
+          { A: ev(), B: ev(), D: ev({ model: undefined }), H: ev({ kind: "house", state: true, model: undefined }) }));
+        out.one = M.validate(mk([P("P1", L("A"))], { A: ev() }));
+        out.models = M.validate(mk([P("P1", L("A"), L("B"))], { A: ev({ model: undefined }), B: ev({ model: { dist: "binomial", q: 0.1, n: 10, k: 1 } }) }));
+        out.gates = M.validate(mk([P("P1", G("X", "XOR", L("A"), L("B")), L("C"))], { A: ev(), B: ev(), C: ev() }));
+        out.inputs = M.validate(mk([P("P1", G("G", "AND", L("A"), L("B")), L("A"))], { A: ev(), B: ev() }));
+        out.outside = M.validate(mk([P("P1", L("A"), L("B")), L("A")], { A: ev(), B: ev() }));
+        out.clone = M.validate(mk([P("P1", G("G", "AND", L("A"), L("B")), L("C")), R("G")], { A: ev(), B: ev(), C: ev() }));
+        out.time = M.validate(mk([P("P1", L("A"), L("B"))], { A: ev(), B: ev() }, { mission_time: 0 }));
+        // a nested PAND: its events belong to the nearest gate; only the outer one is a BDD variable
+        const nest = mk([P("P0", P("P1", L("A"), L("B")), L("C")), L("D")], { A: ev(), B: ev(), C: ev(), D: ev() });
+        out.nested = [M.validate(nest), Object.fromEntries(M.pandMembers(nest)), [...M.bddVars(nest)].sort()];
+        // a gate made PAND: its events without a model get an exponential one at their probability
+        const d = mk([P("P1", L("A"), G("G", "OR", L("B"), L("S")))], { A: ev({ model: undefined }), B: ev({ model: undefined, prob: 0.2 }),
+          S: ev({ model: undefined, samples: [0.1, 0.2] }) });
+        const ids = M.ensureLifetimes(d, d.root.children[0]);
+        M.refreshModels(d);
+        out.ensure = [ids.sort(), d.events.A.model.dist, d.events.B.prob, d.events.S.model ?? null];
+        console.log(JSON.stringify(out));""")
+    assert got["ok"] == []
+    assert got["one"] == ["PRIORITY AND gate P1 needs at least two inputs."]
+    assert got["models"] == [
+        "Event A, under PRIORITY AND gate P1, needs a time-to-failure model.",
+        "Event B, under PRIORITY AND gate P1: the binomial model counts demands, not time; choose a "
+        "time-to-failure model."]
+    assert got["gates"] == ["Gate X (XOR (exactly one)) cannot be inside PRIORITY AND gate P1: only AND, OR, "
+                            "k-out-of-n and PRIORITY AND."]
+    assert got["inputs"] == ["PRIORITY AND gate P1: inputs 1 and 2 share A; its inputs must be independent."]
+    outside = ("PRIORITY AND gate P1 must be independent of the rest of the tree, but these also appear "
+               "outside it: {} (clone the gate itself instead).")
+    assert got["outside"] == [outside.format("A")]
+    assert got["clone"] == [outside.format("A, B, G")]
+    assert got["time"] == ["A PRIORITY AND gate needs a mission time t > 0 (in Probabilities)."]
+    issues, members, variables = got["nested"]
+    assert issues == [] and variables == ["D", "P0"]
+    assert members == {"P1": "P0", "C": "P0", "A": "P1", "B": "P1"}
+    ids, dist, prob_b, model_s = got["ensure"]
+    assert ids == ["A", "B"] and dist == "exponential" and model_s is None
+    assert prob_b == pytest.approx(0.2, rel=1e-3)

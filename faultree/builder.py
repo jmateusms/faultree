@@ -15,6 +15,8 @@ try:
 except Exception as e:
     raise RuntimeError("dd package is required. Install with `pip install dd`.") from e
 
+from .dynamic import DEFAULT_PAND_STEPS, PandResult, check_pand, is_pand, module_members, quantify_pand
+
 
 @dataclass(frozen=True)
 class CompiledTree:
@@ -37,16 +39,36 @@ class CompiledTree:
     event_functions: Dict[str, Function]
     ordering: Tuple[str, ...]
     success_mode: bool
+    #: Nodes strictly inside a PAND gate: quantified by faultree.dynamic,
+    #: not part of the main BDD.
+    module_nodes: Tuple[str, ...] = ()
+
+
+LEAF_EVENT_TYPES = ("basic", "undeveloped", "house", "conditioning")
 
 
 def _is_leaf(node: Dict[str, Any]) -> bool:
-    """A node is a basic/undeveloped (leaf) event iff it has no children and is
-    marked basic either by event_type or by gate."""
+    """A node is a leaf event (basic, undeveloped, house or conditioning) iff
+    it has no children and is marked as a leaf either by event_type or by
+    gate."""
     if node.get("children", []):
         return False
     et = node.get("event_type")
     gate = node.get("gate")
-    return et in ("basic", "undeveloped") or gate in (None, "BASIC")
+    return et in LEAF_EVENT_TYPES or gate in (None, "BASIC")
+
+
+def _is_house(node: Dict[str, Any]) -> bool:
+    """A house event (NUREG-0492's external event) is a switch set to occurred
+    (``state: true``) or not (``state: false``). It is a constant in the BDD,
+    not a variable: it takes no probability and has no importance."""
+    return node.get("event_type") == "house"
+
+
+def _house_value(node: Dict[str, Any], success_mode: bool) -> bool:
+    """The constant a house event contributes. In success mode the leaves are
+    success indicators, so an occurred house event contributes false."""
+    return bool(node["state"]) != success_mode
 
 
 def _children_of(node: Any) -> List[Dict[str, Any]]:
@@ -79,6 +101,12 @@ def collect_basic_events(node: Dict[str, Any], vars_out: List[str]) -> None:
     if "ref" in node:
         return
     if _is_leaf(node):
+        if not _is_house(node):
+            vars_out.append(_leaf_id(node))
+        return
+    if is_pand(node):
+        # A PAND gate is quantified as an independent module (faultree.dynamic)
+        # and enters the BDD as one variable named by its id.
         vars_out.append(_leaf_id(node))
         return
     for ch in _children_of(node):
@@ -158,9 +186,12 @@ def _gate_semantics(node: Dict[str, Any], n_children: int, success_mode: bool) -
       AND <-> OR;  at-least-k -> at-least-(n-k+1);
       exactly-one(x) fails <-> NOT exactly-(n-1)(y)   [not NOT exactly-one(y),
       which is wrong for n >= 3].
+    INHIBIT is an AND of its input and its conditioning event (NUREG-0492):
+    the conditioning event's probability is that of the enabling condition
+    given the input, so the product is exact.
     """
     gate = node.get("gate")
-    if gate == "AND":
+    if gate == "AND" or gate == "INHIBIT":
         return ("OR", None) if success_mode else ("AND", None)
     if gate == "OR":
         return ("AND", None) if success_mode else ("OR", None)
@@ -210,7 +241,7 @@ def _walk(node: Dict[str, Any],
     if nid is not None:
         path.append(nid)
     try:
-        if _is_leaf(node):
+        if _is_leaf(node) or is_pand(node):
             _leaf_id(node)
             return leaf(node)
         children = _children_of(node)
@@ -228,6 +259,8 @@ def _walk(node: Dict[str, Any],
 
 def node_to_bdd(bdd: BDD, node: Dict[str, Any], registry: Optional[Dict[str, Dict[str, Any]]] = None, success_mode: bool = False) -> Function:
     def leaf(n: Dict[str, Any]) -> Function:
+        if _is_house(n):
+            return bdd.true if _house_value(n, success_mode) else bdd.false
         return bdd.var(str(n["id"]))
 
     def combine(kind: str, k: Optional[int], parts: List[Function]) -> Function:
@@ -254,6 +287,11 @@ def node_to_bdd(bdd: BDD, node: Dict[str, Any], registry: Optional[Dict[str, Dic
 
 def node_to_expr(node: Dict[str, Any], registry: Optional[Dict[str, Dict[str, Any]]] = None, use_names: bool = False, success_mode: bool = False) -> str:
     def leaf(n: Dict[str, Any]) -> str:
+        if _is_house(n):
+            return "TRUE" if _house_value(n, success_mode) else "FALSE"
+        if is_pand(n):
+            inner = ", ".join(node_to_expr(c, registry, use_names) for c in _children_of(n))
+            return f"NOT(PAND({inner}))" if success_mode else f"PAND({inner})"
         if use_names:
             return str(n.get("name") or n.get("id"))
         return str(n.get("id"))
@@ -279,6 +317,11 @@ def node_to_expr(node: Dict[str, Any], registry: Optional[Dict[str, Dict[str, An
 
 def node_to_symbolic(node: Dict[str, Any], registry: Optional[Dict[str, Dict[str, Any]]] = None, use_names: bool = False, success_mode: bool = False) -> str:
     def leaf(n: Dict[str, Any]) -> str:
+        if _is_house(n):
+            return "1" if _house_value(n, success_mode) else "0"
+        if is_pand(n):
+            inner = ", ".join(node_to_symbolic(c, registry, use_names) for c in _children_of(n))
+            return f"(1 - PAND({inner}))" if success_mode else f"PAND({inner})"
         if use_names:
             return str(n.get("name") or n.get("id"))
         return str(n.get("id"))
@@ -357,12 +400,67 @@ def gather_nodes(node: Dict[str, Any], acc: Dict[str, Dict[str, Any]]) -> None:
     visit(node, "root")
 
 
+def _check_special_events(tree: Dict[str, Any]) -> None:
+    """Validate house events, INHIBIT gates and conditioning events.
+
+    A house event has a boolean ``state`` and no probability. An INHIBIT gate
+    has exactly two inputs: the input event and one conditioning event. A
+    conditioning event appears only there and only once, because its
+    probability is conditional on that gate's input; sharing it would apply
+    the same condition to another event."""
+    registry: Dict[str, Dict[str, Any]] = {}
+    gather_nodes(tree, registry)
+    conditioning_seen: Dict[str, int] = {}
+
+    def visit(node: Dict[str, Any], parent_gate: Optional[str]) -> None:
+        if "ref" in node:
+            target = registry.get(str(node["ref"]))
+            if target is not None and target.get("event_type") == "conditioning":
+                raise ValueError(
+                    f"Conditioning event '{node['ref']}' cannot be shared by ref: "
+                    "it belongs to one INHIBIT gate")
+            return
+        nid = node.get("id")
+        et = node.get("event_type")
+        if et in ("house", "conditioning") and _children_of(node):
+            raise ValueError(f"{et.capitalize()} event '{nid}' cannot have children")
+        if et == "house":
+            if not isinstance(node.get("state"), bool):
+                raise ValueError(
+                    f"House event '{nid}' needs a boolean 'state' (true: the event "
+                    "occurred, false: it did not)")
+            if node.get("prob") is not None:
+                raise ValueError(
+                    f"House event '{nid}' takes 'state' (true/false), not 'prob'")
+        if et == "conditioning":
+            if parent_gate != "INHIBIT":
+                raise ValueError(
+                    f"Conditioning event '{nid}' must be an input of an INHIBIT gate")
+            conditioning_seen[str(nid)] = conditioning_seen.get(str(nid), 0) + 1
+            if conditioning_seen[str(nid)] > 1:
+                raise ValueError(
+                    f"Conditioning event '{nid}' appears more than once: it belongs "
+                    "to one INHIBIT gate")
+        children = _children_of(node)
+        for child in children:
+            visit(child, node.get("gate"))
+        if node.get("gate") == "INHIBIT":
+            conditions = [c for c in children
+                          if "ref" not in c and c.get("event_type") == "conditioning"]
+            if len(children) != 2 or len(conditions) != 1:
+                raise ValueError(
+                    f"INHIBIT gate '{nid}' needs exactly two inputs: the input "
+                    "event and one conditioning event (event_type 'conditioning')")
+
+    visit(tree, None)
+
+
 def var_probs_from_tree(tree: Dict[str, Any]) -> Dict[str, Any]:
     nodes: Dict[str, Dict[str, Any]] = {}
     gather_nodes(tree, nodes)
     probs: Dict[str, Any] = {}
     for nid, n in nodes.items():
-        if _is_leaf(n):
+        if _is_leaf(n) and not _is_house(n):
             if "prob" in n and n["prob"] is not None:
                 val = n["prob"]
                 if isinstance(val, list):
@@ -648,9 +746,17 @@ def normalize_tree(tree: Dict[str, Any]) -> Dict[str, Any]:
             }
 
             if nid in be_nodes:
-                new_node["event_type"] = "basic"
+                event_type = node_def.get("event_type", "basic")
+                if event_type not in LEAF_EVENT_TYPES:
+                    raise ValueError(
+                        f"Flat-format be_nodes entry '{nid}' has event_type "
+                        f"{event_type!r}; expected one of {', '.join(LEAF_EVENT_TYPES)}")
+                new_node["event_type"] = event_type
                 new_node["gate"] = None
                 new_node["prob"] = node_def.get("prob")
+                for key in ("state", "failure_model"):
+                    if key in node_def:
+                        new_node[key] = node_def[key]
                 new_node["children"] = []
             else:
                 new_node["event_type"] = "top" if nid == root_id else "intermediate"
@@ -670,17 +776,24 @@ def normalize_tree(tree: Dict[str, Any]) -> Dict[str, Any]:
             return new_node
 
         normalized = build_recursive(root_id, [])
+        for key in ("mission_time", "time_unit"):
+            if key in tree:
+                normalized[key] = tree[key]
         reachable: Dict[str, Dict[str, Any]] = {}
         gather_nodes(normalized, reachable)
         unreachable = sorted(set(all_nodes) - set(reachable))
         if unreachable:
             raise ValueError("Flat-format contains disconnected/inaccessible "
                              "nodes: " + ", ".join(unreachable))
+        _check_special_events(normalized)
+        check_pand(normalized, reachable)
         return normalized
     # Also validate recursive trees early, before BDD construction or output
     # maps can silently overwrite an id.
     registry: Dict[str, Dict[str, Any]] = {}
     gather_nodes(tree, registry)
+    _check_special_events(tree)
+    check_pand(tree, registry)
     return tree
 
 
@@ -736,12 +849,34 @@ def _validate_probs(tree: Dict[str, Any], probs: Dict[str, Any], allow_missing: 
         raise ValueError("Invalid probabilities: " + "; ".join(problems))
 
 
+def pand_probabilities(tree: Dict[str, Any], *, steps: int = DEFAULT_PAND_STEPS) -> PandResult:
+    """Quantify the PAND gates of a normalized tree (see faultree.dynamic)."""
+    registry: Dict[str, Dict[str, Any]] = {}
+    gather_nodes(tree, registry)
+    return quantify_pand(tree, registry, steps)
+
+
+def _as_input(value: float, success_mode: bool) -> float:
+    """A failure-space probability as an engine input (a reliability in
+    success mode)."""
+    return 1.0 - value if success_mode else value
+
+
 def _prepared_probabilities(tree: Dict[str, Any], probs_by_id: Union[Dict[str, Any], str, None],
                             *, shuffle: bool, seed: Optional[int],
                             allow_missing: bool,
-                            resample_independent: bool) -> Dict[str, Any]:
-    """Resolve and validate input probabilities once for a quantification."""
+                            resample_independent: bool,
+                            success_mode: bool = False,
+                            pand: Optional[PandResult] = None) -> Dict[str, Any]:
+    """Resolve and validate input probabilities once for a quantification.
+
+    A PAND gate's probability comes from its module; a caller's value for the
+    gate id (a what-if forcing it) takes precedence."""
     base_probs = var_probs_from_tree(tree)
+    if pand is None:
+        pand = pand_probabilities(tree)
+    for gate_id, value in pand.gates.items():
+        base_probs[gate_id] = _as_input(value, success_mode)
     if probs_by_id:
         if isinstance(probs_by_id, str):
             base_probs.update(load_probs_from_file(probs_by_id))
@@ -777,9 +912,10 @@ def compile_tree(tree: Dict[str, Any], ordering: Optional[List[str]] = None,
     bdd = build_manager(normalized, ordering)
     nodes: Dict[str, Dict[str, Any]] = {}
     gather_nodes(normalized, nodes)
+    inside = module_members(normalized, nodes)
     event_functions = {
         nid: node_to_bdd(bdd, node, nodes, success_mode=success_mode)
-        for nid, node in nodes.items()
+        for nid, node in nodes.items() if nid not in inside
     }
     top_id = str(normalized["id"])
     return CompiledTree(
@@ -793,6 +929,7 @@ def compile_tree(tree: Dict[str, Any], ordering: Optional[List[str]] = None,
         event_functions=event_functions,
         ordering=tuple(sorted(bdd.vars, key=bdd.vars.get)),
         success_mode=success_mode,
+        module_nodes=tuple(sorted(inside)),
     )
 
 
@@ -800,15 +937,23 @@ def quantify_compiled(compiled: CompiledTree,
                       probs_by_id: Union[Dict[str, Any], str, None] = None,
                       *, shuffle: bool = False, seed: Optional[int] = 0,
                       allow_missing: bool = False,
-                      resample_independent: bool = False) -> Dict[str, Any]:
-    """Evaluate all event functions of a previously :func:`compile_tree` call."""
+                      resample_independent: bool = False,
+                      pand_steps: int = DEFAULT_PAND_STEPS) -> Dict[str, Any]:
+    """Evaluate all event functions of a previously :func:`compile_tree` call.
+
+    Nodes inside a PAND gate get their module probability at the mission time."""
+    pand = pand_probabilities(compiled.tree, steps=pand_steps)
     base_probs = _prepared_probabilities(
         compiled.tree, probs_by_id, shuffle=shuffle, seed=seed,
-        allow_missing=allow_missing, resample_independent=resample_independent)
-    return {
+        allow_missing=allow_missing, resample_independent=resample_independent,
+        success_mode=compiled.success_mode, pand=pand)
+    out = {
         nid: wmc(compiled.bdd, function, base_probs, allow_missing=allow_missing)
         for nid, function in compiled.event_functions.items()
     }
+    for nid, value in pand.inside.items():
+        out[nid] = _as_input(value, compiled.success_mode)
+    return out
 
 
 def to_jsonable(value: Any) -> Any:
@@ -839,7 +984,8 @@ def analyze(tree: Dict[str, Any], probs_by_id: Union[Dict[str, Any], str, None] 
             ordering: Optional[List[str]] = None, *, use_names: bool = False,
             success_mode: bool = False, shuffle: bool = False,
             seed: Optional[int] = 0, allow_missing: bool = False,
-            resample_independent: bool = False) -> Dict[str, Any]:
+            resample_independent: bool = False,
+            pand_steps: int = DEFAULT_PAND_STEPS) -> Dict[str, Any]:
     """Return a reproducible, structured FTA result.
 
     ``conditional_Q[event]["true"]`` and ``["false"]`` are top-event
@@ -871,13 +1017,17 @@ def analyze(tree: Dict[str, Any], probs_by_id: Union[Dict[str, Any], str, None] 
     """
     compiled = compile_tree(tree, ordering, use_names=use_names,
                             success_mode=success_mode)
+    pand = pand_probabilities(compiled.tree, steps=pand_steps)
     base_probs = _prepared_probabilities(
         compiled.tree, probs_by_id, shuffle=shuffle, seed=seed,
-        allow_missing=allow_missing, resample_independent=resample_independent)
+        allow_missing=allow_missing, resample_independent=resample_independent,
+        success_mode=success_mode, pand=pand)
     probabilities = {
         nid: wmc(compiled.bdd, function, base_probs, allow_missing=allow_missing)
         for nid, function in compiled.event_functions.items()
     }
+    for nid, value in pand.inside.items():
+        probabilities[nid] = _as_input(value, success_mode)
     basic_events: List[str] = []
     collect_basic_events(compiled.tree, basic_events)
     conditional_q: Dict[str, Dict[str, Any]] = {}
@@ -919,6 +1069,7 @@ def analyze(tree: Dict[str, Any], probs_by_id: Union[Dict[str, Any], str, None] 
             "sample_vectors": "jointly_aligned unless resample_independent is true",
             "sample_count": max((np.asarray(v).size for v in base_probs.values()), default=1),
             "success_mode": success_mode,
+            "pand": pand.details,
         },
         "probabilities": probabilities,
         "expression": compiled.expression,
@@ -955,9 +1106,11 @@ def benchmark_orderings(tree: Dict[str, Any], orderings: Iterable[List[str]],
 
 def compute_event_probabilities(bdd: BDD, tree: Dict[str, Any], probs_by_id: Union[Dict[str, Any], str, None] = None, success_mode: bool = False, shuffle: bool = False, seed: Optional[int] = 0, allow_missing: bool = False, resample_independent: bool = False) -> Dict[str, Any]:
     tree = normalize_tree(tree)
+    pand = pand_probabilities(tree)
     base_probs = _prepared_probabilities(
         tree, probs_by_id, shuffle=shuffle, seed=seed,
-        allow_missing=allow_missing, resample_independent=resample_independent)
+        allow_missing=allow_missing, resample_independent=resample_independent,
+        success_mode=success_mode, pand=pand)
 
     nodes: Dict[str, Dict[str, Any]] = {}
     gather_nodes(tree, nodes)
@@ -971,6 +1124,9 @@ def compute_event_probabilities(bdd: BDD, tree: Dict[str, Any], probs_by_id: Uni
         bdd_cache[nid] = f
         return f
     for nid, n in nodes.items():
+        if nid in pand.inside:
+            prob_out[nid] = _as_input(pand.inside[nid], success_mode)
+            continue
         f = build_cached(n)
         prob_out[nid] = wmc(bdd, f, base_probs, allow_missing=allow_missing)
     return prob_out

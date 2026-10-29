@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- NUREG-0492 symbols: house events (`event_type: "house"`, `state`
+  true/false), constants in the BDD that switch configurations without a
+  probability; the INHIBIT gate with its conditioning event
+  (`event_type: "conditioning"`, `prob` = P(condition | input)), exact as
+  input × condition. Validation rejects a house event without a boolean
+  `state` or with a `prob`, an INHIBIT gate without exactly one input and
+  one conditioning event, and a conditioning event outside its INHIBIT gate
+  or shared. `examples/nureg_symbols.json` uses them.
+- PRIORITY AND gates (`"gate": "PAND"`): all inputs occur by the mission
+  time, in order from left to right. Each PAND is quantified as an
+  independent module from the events' time-to-failure models
+  (`failure_model`, `mission_time` on the top event): the inputs' failure-time
+  CDFs on a grid (static subtrees through their own BDD), the ordered
+  recursion G_k = ∫ G_{k-1} dF_k with trapezoidal Stieltjes sums and
+  Richardson extrapolation, then one BDD variable with that probability.
+  Nested PANDs, house events and AND/OR/K_OF_N subtrees are allowed inside;
+  shared events, XOR/INHIBIT inside and binomial models are rejected.
+  `analyze(..., pand_steps=)` and `assumptions["pand"]` (value, error
+  estimate). New module `faultree.dynamic`. `examples/priority_and.json`.
+- Flat format: `be_nodes` entries may carry `event_type` (basic,
+  undeveloped, house, conditioning) `state` and `failure_model`; a flat model's top-level
+  `mission_time` and `time_unit` are kept.
+
 ## 0.4.0 — 2026-10-08
 
 ### Added
