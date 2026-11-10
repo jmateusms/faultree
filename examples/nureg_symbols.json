@@ -1,0 +1,63 @@
+{
+  "id": "TOP",
+  "name": "Loss of tank cooling or tank rupture",
+  "name_pt": "Perda do resfriamento ou ruptura do tanque",
+  "note": "Illustrative model with the NUREG-0492 symbols beyond AND/OR: an INHIBIT gate with its conditioning event (the relief valve fails to open, given an overpressure), a house event that switches cooling train A into maintenance, and an undeveloped event. Set the house event to true to see the tree with train A out of service. The probabilities are illustrative.",
+  "note_pt": "Modelo ilustrativo com os símbolos da NUREG-0492 além de E/OU: uma porta INIBIÇÃO com seu evento condicionante (a válvula de alívio não abre, dada uma sobrepressão), um evento casa que coloca o trem A de resfriamento em manutenção e um evento não desenvolvido. Mude o evento casa para verdadeiro para ver a árvore com o trem A fora de serviço. As probabilidades são ilustrativas.",
+  "event_type": "top",
+  "gate": "OR",
+  "children": [
+    {
+      "id": "RUPT",
+      "name": "Tank rupture by overpressure",
+      "name_pt": "Ruptura do tanque por sobrepressão",
+      "event_type": "intermediate",
+      "gate": "INHIBIT",
+      "children": [
+        {
+          "id": "OVERP",
+          "name": "Overpressure in the tank",
+          "name_pt": "Sobrepressão no tanque",
+          "event_type": "intermediate",
+          "gate": "OR",
+          "children": [
+            {"id": "PCTRL", "name": "Pressure controller fails high", "name_pt": "Controlador de pressão falha alto", "event_type": "basic", "gate": null, "prob": 0.002, "children": []},
+            {"id": "OPER", "name": "Operator overfills the tank", "name_pt": "Operador enche demais o tanque", "event_type": "basic", "gate": null, "prob": 0.001, "children": []}
+          ]
+        },
+        {"id": "RV", "name": "Relief valve fails to open, given overpressure", "name_pt": "Válvula de alívio não abre, dada a sobrepressão", "event_type": "conditioning", "gate": null, "prob": 0.05, "children": []}
+      ]
+    },
+    {
+      "id": "COOL",
+      "name": "Loss of tank cooling",
+      "name_pt": "Perda do resfriamento do tanque",
+      "event_type": "intermediate",
+      "gate": "AND",
+      "children": [
+        {
+          "id": "TRAIN_A",
+          "name": "Cooling train A unavailable",
+          "name_pt": "Trem A de resfriamento indisponível",
+          "event_type": "intermediate",
+          "gate": "OR",
+          "children": [
+            {"id": "PUMP_A", "name": "Pump A fails", "name_pt": "Bomba A falha", "event_type": "basic", "gate": null, "prob": 0.003, "children": []},
+            {"id": "MAINT_A", "name": "Train A in maintenance", "name_pt": "Trem A em manutenção", "event_type": "house", "gate": null, "state": false, "children": []}
+          ]
+        },
+        {
+          "id": "TRAIN_B",
+          "name": "Cooling train B unavailable",
+          "name_pt": "Trem B de resfriamento indisponível",
+          "event_type": "intermediate",
+          "gate": "OR",
+          "children": [
+            {"id": "PUMP_B", "name": "Pump B fails", "name_pt": "Bomba B falha", "event_type": "basic", "gate": null, "prob": 0.003, "children": []},
+            {"id": "POWER", "name": "Loss of offsite power (not developed)", "name_pt": "Perda de energia externa (não desenvolvido)", "event_type": "undeveloped", "gate": null, "prob": 0.0005, "children": []}
+          ]
+        }
+      ]
+    }
+  ]
+}

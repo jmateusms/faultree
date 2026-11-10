@@ -21,8 +21,10 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 import numpy as np
 
 from ..builder import (
+    _is_house,
     _is_leaf,
     analyze,
+    pand_probabilities,
     collect_basic_events,
     compile_tree,
     gather_nodes,
@@ -81,8 +83,9 @@ def _example_path(name: str) -> Path:
 def _count_nodes(tree: Dict[str, Any]) -> Tuple[int, int]:
     nodes: Dict[str, Dict[str, Any]] = {}
     gather_nodes(tree, nodes)
-    basic = sum(1 for node in nodes.values() if _is_leaf(node))
-    return basic, len(nodes) - basic
+    leaves = [node for node in nodes.values() if _is_leaf(node)]
+    basic = sum(1 for node in leaves if not _is_house(node))
+    return basic, len(nodes) - len(leaves)
 
 
 def list_examples() -> List[Dict[str, Any]]:
@@ -193,8 +196,9 @@ def _int(value: Any, name: str, low: int, high: int) -> int:
 
 
 def _require_scalars(tree: Dict[str, Any]) -> None:
+    basic = set(_basic_ids(tree))  # events inside a PAND take no probability
     vectors = [eid for eid, value in var_probs_from_tree(tree).items()
-               if np.ndim(value) > 0]
+               if np.ndim(value) > 0 and eid in basic]
     if vectors:
         raise GuiError("the point analysis needs one probability per event; "
                        "sample vectors go to the uncertainty analysis ("
@@ -291,7 +295,11 @@ def analyze_point(tree: Any, *, success_mode: bool = False, max_order: int = 6,
     _require_scalars(tree)
     result = analyze(tree, None, success_mode=success_mode)
     top_id = str(tree["id"])
-    inputs = {eid: float(p) for eid, p in var_probs_from_tree(tree).items()}
+    basic = set(_basic_ids(tree))
+    inputs = {eid: float(p) for eid, p in var_probs_from_tree(tree).items() if eid in basic}
+    # A PAND gate is one BDD variable whose value comes from its module.
+    for gate_id, details in result["assumptions"]["pand"].items():
+        inputs[gate_id] = 1.0 - details["Q"] if success_mode else details["Q"]
     q = float(result["Q"])
     compiled = compile_tree(tree, success_mode=success_mode, include_expressions=False)
     out = {
@@ -335,7 +343,8 @@ def what_if(tree: Any, forced: Any, *, success_mode: bool = False) -> Dict[str, 
         raise GuiError("'forced' must map event ids to 'failed' or 'working'")
     basic = set(_basic_ids(tree))
     compiled = compile_tree(tree, success_mode=success_mode, include_expressions=False)
-    base = var_probs_from_tree(tree)
+    # Events inside a PAND gate take their values from its module.
+    base = {eid: p for eid, p in var_probs_from_tree(tree).items() if eid in basic}
     probs = dict(base)
     for eid, state in forced.items():
         if eid not in basic:
@@ -345,8 +354,9 @@ def what_if(tree: Any, forced: Any, *, success_mode: bool = False) -> Dict[str, 
         failed = state == "failed"
         probs[eid] = (0.0 if failed else 1.0) if success_mode else (1.0 if failed else 0.0)
     top_id = str(compiled.tree["id"])
-    baseline = quantify_compiled(compiled, base)
-    scenario = quantify_compiled(compiled, probs)
+    pand = pand_probabilities(compiled.tree)
+    baseline = quantify_compiled(compiled, base, pand=pand)
+    scenario = quantify_compiled(compiled, probs, pand=pand)
     return to_jsonable({
         "mode": "success" if success_mode else "failure",
         "top_id": top_id,
@@ -499,8 +509,9 @@ def analyze_uncertainty(tree: Any, *, distributions: Any = None, samples: Any = 
         if eid not in basic:
             raise GuiError(f"'{eid}' is not a basic event of this tree")
     given: Dict[str, np.ndarray] = {}
+    # Events inside a PAND gate take their values from its module.
     tree_vectors = {eid: value for eid, value in var_probs_from_tree(tree).items()
-                    if np.ndim(value) > 0}
+                    if np.ndim(value) > 0 and eid in basic}
     for eid, vector in {**tree_vectors, **samples}.items():
         if eid in distributions:
             continue  # an explicit distribution replaces the vector
@@ -520,7 +531,7 @@ def analyze_uncertainty(tree: Any, *, distributions: Any = None, samples: Any = 
         raise GuiError("no event has a distribution or sample vector")
 
     probs: Dict[str, Any] = {eid: p for eid, p in var_probs_from_tree(tree).items()
-                             if np.ndim(p) == 0}
+                             if np.ndim(p) == 0 and eid in basic}
     probs.update(given)
     clipped: Dict[str, int] = {}
     inputs: Dict[str, Any] = {}
