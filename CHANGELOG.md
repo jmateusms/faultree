@@ -30,6 +30,32 @@
   `assumptions["pand"]` (value, error estimate, grid points);
   `quantify_compiled(..., pand=)` reuses a `pand_probabilities` result. New
   module `faultree.dynamic`. `examples/priority_and.json`.
+- Reliability block diagrams: a model marked `"model": "rbd"` with
+  `series`, `parallel` and `k_of_n` (k-out-of-n:G) groups, blocks, switches
+  (house events), repeated blocks (`ref`), conditioning blocks (INHIBIT) and
+  `{"fault_tree": node}` blocks for logic without an RBD form (XOR, PAND).
+  `normalize_tree` converts it to its fault tree, so `analyze`, the cut sets,
+  the CLI, the API server and the GUI accept it. New module `faultree.rbd`
+  with `rbd_to_tree()` and `tree_to_rbd()`; `minimal_path_sets()`, built
+  top-down with superset elimination (default max order 10; complete up to
+  `complete_to_order`; a list from which nothing was left out is complete,
+  otherwise completeness is checked on the BDD within a node budget); CLI options
+  `--to-rbd`, `--to-ft` and `--path-sets`. `examples/rbd_cooling.json`,
+  `examples/rbd_bridge.json`.
+- GUI Blocks view: a Tree | Blocks switch draws the same model as a
+  reliability block diagram in the editor, the results and what-if (series,
+  parallel rails, k/n voters, group frames with their values, switches,
+  conditioning blocks, repeated groups, XOR/PAND module blocks, shared-block
+  markers). RBD files open in it; the JSON tab shows the RBD; Save offers
+  the RBD format (`/api/rbd`). The diagram is edited in place: add a block
+  in series or in parallel, add a block to a group, cycle a group through
+  series, parallel and k-out-of-n, remove; a k-out-of-n group keeps its
+  number of blocks that must work, which the side panel edits. New in the
+  Blocks view starts in success mode (new events get R = 0.99, as new
+  events in success mode now do everywhere); in failure mode a reminder
+  switches the drawn values between P and R = 1 − P. The cut-set
+  tab also lists minimal path sets with the probability that all their
+  blocks work. The three save buttons are one Save menu.
 - Flat format: `be_nodes` entries may carry `event_type` (basic,
   undeveloped, house, conditioning) `state` and `failure_model`; a flat model's top-level
   `mission_time` and `time_unit` are kept.
