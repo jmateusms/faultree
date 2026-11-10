@@ -42,7 +42,7 @@ def _post_routes() -> Dict[str, Callable[[Dict[str, Any]], Any]]:
         "/api/import": lambda body: engine.import_tree(body.get("data")),
         "/api/analyze": lambda body: engine.analyze_point(
             body.get("tree"), success_mode=body.get("success_mode", False),
-            max_order=body.get("max_order", 6)),
+            max_order=body.get("max_order", 6), path_order=body.get("path_order", 10)),
         "/api/whatif": lambda body: engine.what_if(
             body.get("tree"), body.get("forced", {}),
             success_mode=body.get("success_mode", False)),
@@ -50,6 +50,7 @@ def _post_routes() -> Dict[str, Callable[[Dict[str, Any]], Any]]:
             body.get("tree"), distributions=body.get("distributions"),
             samples=body.get("samples"), n=body.get("n", engine.DEFAULT_SAMPLES),
             seed=body.get("seed", 0), success_mode=body.get("success_mode", False)),
+        "/api/rbd": lambda body: engine.export_rbd(body.get("tree")),
         "/api/probfile": lambda body: engine.read_prob_upload(
             body.get("filename"), body.get("content_b64")),
     }

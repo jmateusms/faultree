@@ -1,0 +1,56 @@
+{
+  "model": "rbd",
+  "id": "COOLING",
+  "name": "Emergency cooling works",
+  "name_pt": "Resfriamento de emergência funciona",
+  "note": "Illustrative reliability block diagram. In series: the water tank, two redundant pump trains in parallel, level sensors with 2-out-of-3 voting and the controller (not developed). Both trains take power from bus 1, a repeated block, so the trains are not independent. The switch is closed while train B is in service; open it to model train B in maintenance. A block's prob is its failure probability (a reliability in success mode). The probabilities are illustrative.",
+  "note_pt": "Diagrama de blocos de confiabilidade ilustrativo. Em série: o tanque de água, dois trens de bombeamento redundantes em paralelo, sensores de nível com votação 2 de 3 e o controlador (não desenvolvido). Os dois trens recebem energia do barramento 1, um bloco repetido, então os trens não são independentes. A chave fica fechada enquanto o trem B está em serviço; abra-a para modelar o trem B em manutenção. O prob de um bloco é a probabilidade de falha (uma confiabilidade no modo de sucesso). As probabilidades são ilustrativas.",
+  "structure": "series",
+  "blocks": [
+    {"id": "TANK", "name": "Water tank", "name_pt": "Tanque de água", "prob": 1e-05},
+    {
+      "id": "TRAINS",
+      "name": "Pump trains",
+      "name_pt": "Trens de bombeamento",
+      "structure": "parallel",
+      "blocks": [
+        {
+          "id": "TRAIN_A",
+          "name": "Train A",
+          "name_pt": "Trem A",
+          "structure": "series",
+          "blocks": [
+            {"id": "BUS_1", "name": "Power bus 1", "name_pt": "Barramento 1", "prob": 0.0002},
+            {"id": "PUMP_A", "name": "Pump A", "name_pt": "Bomba A", "prob": 0.003},
+            {"id": "VALVE_A", "name": "Valve A", "name_pt": "Válvula A", "prob": 0.001}
+          ]
+        },
+        {
+          "id": "TRAIN_B",
+          "name": "Train B",
+          "name_pt": "Trem B",
+          "structure": "series",
+          "blocks": [
+            {"id": "MAINT_B", "name": "Train B in service (open: maintenance)", "name_pt": "Trem B em serviço (aberta: manutenção)", "switch": "closed"},
+            {"ref": "BUS_1"},
+            {"id": "PUMP_B", "name": "Pump B", "name_pt": "Bomba B", "prob": 0.003},
+            {"id": "VALVE_B", "name": "Valve B", "name_pt": "Válvula B", "prob": 0.001}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "SENSORS",
+      "name": "Level sensors, 2-out-of-3",
+      "name_pt": "Sensores de nível, 2 de 3",
+      "structure": "k_of_n",
+      "k": 2,
+      "blocks": [
+        {"id": "LS1", "name": "Level sensor 1", "name_pt": "Sensor de nível 1", "prob": 0.005},
+        {"id": "LS2", "name": "Level sensor 2", "name_pt": "Sensor de nível 2", "prob": 0.005},
+        {"id": "LS3", "name": "Level sensor 3", "name_pt": "Sensor de nível 3", "prob": 0.005}
+      ]
+    },
+    {"id": "CTRL", "name": "Controller (not developed)", "name_pt": "Controlador (não desenvolvido)", "kind": "undeveloped", "prob": 0.0001}
+  ]
+}

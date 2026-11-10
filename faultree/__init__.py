@@ -18,5 +18,6 @@ __all__ = [
     "quantify_compiled",
 ]
 
-from .cutsets import minimal_cut_sets
-__all__.append("minimal_cut_sets")
+from .cutsets import minimal_cut_sets, minimal_path_sets
+from .rbd import rbd_to_tree, tree_to_rbd
+__all__ += ["minimal_cut_sets", "minimal_path_sets", "rbd_to_tree", "tree_to_rbd"]

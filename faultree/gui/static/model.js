@@ -57,6 +57,10 @@ export const TIME_PARAMS = new Set(["eta", "mu", "sigma", "tmed", "theta", "a", 
 export const DEFAULT_T = 1000;
 export const TIME_UNITS = ["h", "d", "y", "min", "cycles"];
 let UID = 0;
+// Value of a new event: a failure probability, or a reliability in success
+// mode (set by the app).
+let NEW_PROB = 0.01;
+export function setNewProb(p) { NEW_PROB = p; }
 
 export function gateNode(id, name, gate, children = [], k = 2) { return { t: "gate", uid: ++UID, id, name, gate, k, children }; }
 export function leafNode(id) { return { t: "leaf", uid: ++UID, id }; }
@@ -110,7 +114,7 @@ export function dispName(x) { return (lang() === "pt" && x && x.name_pt) || (x &
 export function setDispName(x, v) { if (lang() === "pt" && x.name_pt != null) x.name_pt = v; else x.name = v; }
 export function newEvent(doc, kind = "basic") {
   const id = freshId(doc, kind === "conditioning" ? "C" : "E");
-  doc.events[id] = { name: t(kind === "conditioning" ? "model.newCondition" : "model.newEvent"), prob: 0.01, kind, dist: null, samples: null };
+  doc.events[id] = { name: t(kind === "conditioning" ? "model.newCondition" : "model.newEvent"), prob: NEW_PROB, kind, dist: null, samples: null };
   return leafNode(id);
 }
 // Change an event's kind, dropping what the new kind does not take.
@@ -448,6 +452,95 @@ export function validate(doc) {
     if (e.dist && !validDist(e.dist)) out.push(t("issue.distBad", { id }));
   }
   return out;
+}
+
+// ------------------------------------------------------------- RBD ---
+// The reliability block diagram of a gate, for the Blocks view (the tree
+// stays the model; faultree.rbd maps files the same way): OR is a series
+// group, AND and INHIBIT parallel groups (INHIBIT: its input in parallel with
+// its conditioning event), K_OF_N with k failures a group of which k' =
+// n - k + 1 blocks must work. XOR, PAND and K_OF_N with k = 0 (always
+// failed) have no block structure: a module block, fault-tree logic seen in
+// the tree view. A K_OF_N group being edited (no inputs, k out of range)
+// stays a group, so that blocks can be added back.
+export function rbdStructure(g) {
+  if (g.gate === "OR") return "series";
+  if (g.gate === "AND" || g.gate === "INHIBIT") return "parallel";
+  if (g.gate === "K_OF_N" && g.k !== 0) return "kofn";
+  return "module";
+}
+// k' = n - k + 1 blocks of a k-out-of-n group must work; null when k is
+// out of range.
+export function rbdWork(g) {
+  const n = g.children.length, k = g.k;
+  return Number.isInteger(k) && k >= 1 && k <= n ? n - k + 1 : null;
+}
+// The element drawn in the Blocks view for node `uid`: the node itself, or
+// the module block that holds it (its logic is only in the tree view).
+export function drawnUid(doc, uid) {
+  let found = null;
+  (function go(n, module) {
+    if (found != null) return;
+    if (n.uid === uid) { found = module ?? n.uid; return; }
+    if (n.t !== "gate") return;
+    const inner = module ?? (rbdStructure(n) === "module" ? n.uid : null);
+    n.children.forEach((c) => go(c, inner));
+  })(doc.root, null);
+  return found;
+}
+// The diagram of the whole document: {type, n} items, groups with `items`
+// (and `k`, blocks that must work, for kofn). A leaf is a block, a house
+// event a switch (open when the event has occurred), a clone a repeat of a
+// group, drawn as one block.
+export function rbdOf(doc) {
+  return (function conv(n) {
+    if (n.t === "ref") return { type: "clone", n };
+    if (n.t === "leaf") return { type: isHouse(doc.events[n.id]) ? "switch" : "block", n };
+    const type = rbdStructure(n);
+    if (type === "module") return { type, n };
+    const item = { type, n, items: n.children.map(conv) };
+    if (type === "kofn") item.k = rbdWork(n);
+    return item;
+  })(doc.root);
+}
+
+// Edits made on the block diagram, as tree edits. A k-out-of-n group keeps
+// its number of blocks that must work (k' = n - k + 1) when a block is added
+// or removed there (keepWork), as the tree view keeps k.
+export function addBlockTo(g, c, keepWork = false) {
+  const work = keepWork && rbdStructure(g) === "kofn" ? rbdWork(g) : null;
+  g.children.push(c);
+  if (work != null) g.k += 1;
+  // A group whose k was out of range (emptied, or edited in the tree view)
+  // takes the nearest valid k.
+  else if (keepWork && rbdStructure(g) === "kofn") g.k = Math.min(Math.max(1, g.k), g.children.length);
+}
+export function removeFrom(f, keepWork = false) {
+  const kofn = keepWork && rbdStructure(f.p) === "kofn";
+  f.p.children.splice(f.i, 1);
+  if (kofn) f.p.k = Math.max(1, f.p.k - 1);
+}
+// A new block in series ("series") or in parallel ("parallel") with the
+// element f.n (f from findUid): a sibling when its group already has that
+// structure, the last block of f.n when f.n is such a group, otherwise f.n
+// and the new block in a new group in its place (a new top group for the
+// top).
+export function addAround(doc, f, structure) {
+  const gate = structure === "series" ? "OR" : "AND";
+  const c = newEvent(doc);
+  if (f.p && f.p.gate === gate) { f.p.children.splice(f.i + 1, 0, c); return c; }
+  // A group with that structure takes the block itself, unless it is cloned
+  // (its clones would change too).
+  if (f.n.t === "gate" && f.n.gate === gate && !refCounts(doc).has(f.n.id)) { f.n.children.push(c); return c; }
+  const g = gateNode(freshId(doc, "G"), t(f.p ? "model.newGate" : "model.top"), gate, [f.n, c]);
+  if (f.p) f.p.children[f.i] = g; else doc.root = g;
+  return c;
+}
+// Series -> parallel -> k-out-of-n (n - 1 of n must work, at least 1) -> series.
+export function cycleStructure(g) {
+  const order = ["OR", "AND", "K_OF_N"];
+  g.gate = order[(order.indexOf(g.gate) + 1) % order.length];
+  if (g.gate === "K_OF_N") g.k = Math.min(2, Math.max(1, g.children.length));
 }
 
 // ---------------------------------------------------------- import ------

@@ -19,8 +19,14 @@
     <button type="button" id="btnNew" class="btn ghost sm" data-i18n="file.new">New</button>
     <button type="button" id="btnOpen" class="btn ghost sm" data-i18n="file.open">Open…</button>
     <input type="file" id="fileOpen" accept=".json,application/json" hidden>
-    <button type="button" id="btnSave" class="btn ghost sm" data-i18n="file.save">Save JSON</button>
-    <button type="button" id="btnSaveFlat" class="btn ghost sm" data-i18n="file.saveFlat">Save flat</button>
+    <details class="menu" id="saveMenu">
+      <summary class="btn ghost sm" data-i18n="file.saveMenu">Save</summary>
+      <div class="pop">
+        <button type="button" id="btnSave" data-i18n="file.save">Fault tree (JSON)</button>
+        <button type="button" id="btnSaveFlat" data-i18n="file.saveFlat">Flat fault tree (JSON)</button>
+        <button type="button" id="btnSaveRbd" data-i18n="file.saveRbd" data-i18n-title="file.saveRbdHint">Block diagram (RBD JSON)</button>
+      </div>
+    </details>
     <span class="seg">
       <button type="button" id="btnUndo" data-i18n-title="file.undo" aria-label="Undo" data-i18n-aria-label="file.undo">↶</button>
       <button type="button" id="btnRedo" data-i18n-title="file.redo" aria-label="Redo" data-i18n-aria-label="file.redo">↷</button>
@@ -31,6 +37,11 @@
     <span class="seg" role="radiogroup">
       <button type="button" data-mode="failure" class="on" role="radio" data-i18n="mode.failure" data-i18n-title="mode.failureHint">Failure (Q)</button>
       <button type="button" data-mode="success" role="radio" data-i18n="mode.success" data-i18n-title="mode.successHint">Success (R)</button>
+    </span>
+    <span class="lbl" data-i18n="view.label">View</span>
+    <span class="seg" role="radiogroup">
+      <button type="button" data-view="tree" class="on" role="radio" data-i18n="view.tree" data-i18n-title="view.treeHint">Tree</button>
+      <button type="button" data-view="blocks" role="radio" data-i18n="view.blocks" data-i18n-title="view.blocksHint">Blocks</button>
     </span>
   </div>
   <div class="status" id="status" aria-live="polite"></div>
@@ -92,7 +103,7 @@
     </div>
 
     <div class="ltab" id="ltab-json" hidden>
-      <p class="hint" data-i18n="json.intro">faultree's JSON for this model (recursive format). Edit and apply, or paste a recursive or flat model.</p>
+      <p class="hint" id="jsonIntro" data-i18n="json.intro">faultree's JSON for this model (recursive format). Edit and apply, or paste a recursive or flat model.</p>
       <textarea class="code" id="jsonText" spellcheck="false" aria-label="JSON"></textarea>
       <div class="btnrow">
         <button type="button" class="btn sm" id="jsonApply" data-i18n="json.apply">Apply this JSON</button>

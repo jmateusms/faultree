@@ -16,6 +16,7 @@ except Exception as e:
     raise RuntimeError("dd package is required. Install with `pip install dd`.") from e
 
 from .dynamic import DEFAULT_PAND_STEPS, PandResult, check_pand, is_pand, module_members, quantify_pand
+from .rbd import is_rbd, rbd_to_tree
 
 
 @dataclass(frozen=True)
@@ -654,6 +655,9 @@ def wmc(bdd: BDD, func: Function, var_prob: Dict[str, Any], allow_missing: bool 
 def normalize_tree(tree: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(tree, dict):
         raise ValueError(f"Tree must be a JSON object, got: {tree!r}")
+    if is_rbd(tree):
+        # A reliability block diagram: analyzed as its fault tree (faultree.rbd).
+        tree = rbd_to_tree(tree)
     if "ft_nodes" in tree and "be_nodes" in tree:
         for kind in ("ft_nodes", "be_nodes"):
             if not isinstance(tree[kind], list):

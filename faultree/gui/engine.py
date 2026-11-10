@@ -34,7 +34,8 @@ from ..builder import (
     to_jsonable,
     var_probs_from_tree,
 )
-from ..cutsets import minimal_cut_sets
+from ..cutsets import minimal_cut_sets, minimal_path_sets
+from ..rbd import is_rbd, tree_to_rbd
 
 #: Upper bound on the number of joint samples one uncertainty run may draw.
 MAX_SAMPLES = 50_000
@@ -105,7 +106,7 @@ def list_examples() -> List[Dict[str, Any]]:
             "file": path.name,
             "title": str(tree.get("name") or tree.get("id")),
             "title_pt": tree.get("name_pt"),
-            "format": "flat" if "ft_nodes" in raw else "recursive",
+            "format": _format_of(raw),
             "basic_events": basic,
             "gates": gates,
             "success_mode": path.stem.endswith("_success"),
@@ -130,9 +131,18 @@ def load_example(name: str) -> Dict[str, Any]:
 
 
 # -------------------------------------------------------------------- input --
+def _format_of(data: Dict[str, Any]) -> str:
+    """The file format: a flat or recursive fault tree, or an RBD (the editor
+    gets every one of them as a recursive tree)."""
+    if is_rbd(data):
+        return "rbd"
+    return "flat" if "ft_nodes" in data and "be_nodes" in data else "recursive"
+
+
 def import_tree(data: Any) -> Dict[str, Any]:
-    """Normalize a recursive or flat tree (or an API request body holding a
-    ``tree`` and optional ``probs``) into the recursive form the editor uses."""
+    """Normalize a recursive or flat tree or an RBD (or an API request body
+    holding a ``tree`` and optional ``probs``) into the recursive form the
+    editor uses."""
     probs = None
     if (isinstance(data, dict) and isinstance(data.get("tree"), dict)
             and not {"id", "gate", "ft_nodes"} & set(data)):
@@ -140,16 +150,24 @@ def import_tree(data: Any) -> Dict[str, Any]:
         data = data["tree"]
     if not isinstance(data, dict):
         raise GuiError("the tree must be a JSON object")
-    fmt = "flat" if "ft_nodes" in data and "be_nodes" in data else "recursive"
+    fmt = _format_of(data)
     tree = normalize_tree(data)
     if "id" not in tree:
         raise GuiError("the top event has no 'id'")
     result: Dict[str, Any] = {"tree": tree, "format": fmt}
     if isinstance(probs, dict):
         result["probs"] = probs
-    if fmt == "recursive" and data.get("prob_file"):
+    if fmt != "flat" and data.get("prob_file"):
         result["prob_file_missing"] = str(data["prob_file"])
     return result
+
+
+def export_rbd(tree: Any) -> Dict[str, Any]:
+    """The reliability block diagram of an editor tree, as
+    :func:`faultree.tree_to_rbd` writes it (the editor's Save RBD)."""
+    if not isinstance(tree, dict):
+        raise GuiError("the tree must be a JSON object")
+    return {"rbd": tree_to_rbd(tree)}
 
 
 def read_prob_upload(filename: str, content_b64: str) -> Dict[str, Any]:
@@ -285,12 +303,43 @@ def _cut_set_summary(tree: Dict[str, Any], probs: Mapping[str, float], q: float,
     }
 
 
+def _path_set_summary(tree: Dict[str, Any], probs: Mapping[str, float], success_mode: bool,
+                      max_order: int) -> Dict[str, Any]:
+    """Minimal path sets (the blocks of each minimal path of the RBD), each
+    with the probability that all its events work: the product of their
+    reliabilities, 1 - p in failure mode and p in success mode."""
+    try:
+        found = minimal_path_sets(tree, max_order=max_order)
+    except ValueError as error:
+        return {"available": False, "error": str(error)}
+    rows = []
+    for events in found["path_sets"]:
+        works = [float(probs[e]) if success_mode else 1.0 - float(probs[e]) for e in events]
+        rows.append({"events": events, "order": len(events),
+                     "p": float(np.prod(works)) if works else 1.0})
+    rows.sort(key=lambda row: (-row["p"], row["order"], row["events"]))
+    by_order: Dict[int, int] = {}
+    for row in rows:
+        by_order[row["order"]] = by_order.get(row["order"], 0) + 1
+    return {
+        "available": True,
+        "rows": rows,
+        "complete": found["complete"],
+        "truncated": found["truncated"],
+        "reason": found["reason"],
+        "complete_to_order": found["complete_to_order"],
+        "by_order": {str(k): v for k, v in sorted(by_order.items())},
+    }
+
+
 def analyze_point(tree: Any, *, success_mode: bool = False, max_order: int = 6,
-                  bdd_limit: int = BDD_DRAW_LIMIT) -> Dict[str, Any]:
-    """Exact point analysis: Q (or R), every event, importance, cut sets, BDD."""
+                  path_order: int = 10, bdd_limit: int = BDD_DRAW_LIMIT) -> Dict[str, Any]:
+    """Exact point analysis: Q (or R), every event, importance, cut and path
+    sets, BDD."""
     started = perf_counter()
     success_mode = _flag(success_mode, "success_mode")
     max_order = _int(max_order, "max_order", 1, 12)
+    path_order = _int(path_order, "path_order", 1, 40)
     tree = normalize_tree(tree)
     _require_scalars(tree)
     result = analyze(tree, None, success_mode=success_mode)
@@ -323,6 +372,7 @@ def analyze_point(tree: Any, *, success_mode: bool = False, max_order: int = 6,
         out["cut_sets"] = {"available": False, "error": "success_mode"}
     else:
         out["cut_sets"] = _cut_set_summary(tree, inputs, q, max_order)
+    out["path_sets"] = _path_set_summary(tree, inputs, success_mode, path_order)
     out["elapsed_ms"] = (perf_counter() - started) * 1000.0
     return to_jsonable(out)
 

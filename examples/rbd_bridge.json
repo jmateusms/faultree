@@ -1,0 +1,49 @@
+{
+  "model": "rbd",
+  "id": "BRIDGE",
+  "name": "Bridge network works",
+  "name_pt": "Rede em ponte funciona",
+  "note": "Illustrative bridge: A and B on the upper branch, C and D on the lower one, and E connecting their midpoints in either direction. A bridge is not a series-parallel structure, so it is written here as the parallel of its four minimal paths (A-B, C-D, A-E-D, C-E-B), with repeated blocks; the result is exact, because a repeated block is one event. The probabilities are illustrative failure probabilities.",
+  "note_pt": "Ponte ilustrativa: A e B no ramo superior, C e D no inferior e E ligando os pontos médios nos dois sentidos. Uma ponte não é uma estrutura série-paralelo, então aqui ela é escrita como o paralelo dos seus quatro caminhos mínimos (A-B, C-D, A-E-D, C-E-B), com blocos repetidos; o resultado é exato, porque um bloco repetido é um único evento. As probabilidades são probabilidades de falha ilustrativas.",
+  "structure": "parallel",
+  "blocks": [
+    {
+      "id": "PATH_AB",
+      "name": "Path A-B",
+      "name_pt": "Caminho A-B",
+      "structure": "series",
+      "blocks": [
+        {"id": "A", "name": "Component A", "name_pt": "Componente A", "prob": 0.02},
+        {"id": "B", "name": "Component B", "name_pt": "Componente B", "prob": 0.03}
+      ]
+    },
+    {
+      "id": "PATH_CD",
+      "name": "Path C-D",
+      "name_pt": "Caminho C-D",
+      "structure": "series",
+      "blocks": [
+        {"id": "C", "name": "Component C", "name_pt": "Componente C", "prob": 0.02},
+        {"id": "D", "name": "Component D", "name_pt": "Componente D", "prob": 0.03}
+      ]
+    },
+    {
+      "id": "PATH_AED",
+      "name": "Path A-E-D",
+      "name_pt": "Caminho A-E-D",
+      "structure": "series",
+      "blocks": [
+        {"ref": "A"},
+        {"id": "E", "name": "Bridge component E", "name_pt": "Componente de ponte E", "prob": 0.05},
+        {"ref": "D"}
+      ]
+    },
+    {
+      "id": "PATH_CEB",
+      "name": "Path C-E-B",
+      "name_pt": "Caminho C-E-B",
+      "structure": "series",
+      "blocks": [{"ref": "C"}, {"ref": "E"}, {"ref": "B"}]
+    }
+  ]
+}
