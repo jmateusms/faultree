@@ -4,7 +4,8 @@ import sys
 import os
 import numpy as np
 from .builder import analyze, build, compute_event_probabilities, normalize_tree, to_jsonable
-from .cutsets import minimal_cut_sets
+from .cutsets import minimal_cut_sets, minimal_path_sets
+from .rbd import tree_to_rbd
 
 
 def main(argv=None) -> None:
@@ -18,7 +19,7 @@ def main(argv=None) -> None:
     p = argparse.ArgumentParser(
         description="Build OBDD from FTA JSON and evaluate probabilities.",
         epilog="Graphical interface: faultree gui [--port N] [--no-browser]")
-    p.add_argument("json_file", nargs='?', help="Path to FTA JSON file")
+    p.add_argument("json_file", nargs='?', help="Path to a fault tree (recursive or flat) or reliability block diagram JSON file")
     p.add_argument("--ordering", nargs='*', default=None, help="Optional variable ordering (basic event ids)")
     p.add_argument("--probs", type=str, default=None, help="JSON mapping of basic event id -> probability, or path to CSV/Excel file")
     p.add_argument("--use-names", action="store_true", help="Use event names instead of IDs in expression output")
@@ -28,8 +29,13 @@ def main(argv=None) -> None:
     p.add_argument("--resample-independent", action="store_true", help="Explicitly bootstrap unequal sample vectors as independent marginals (destroys joint alignment)")
     p.add_argument("--assume-missing-zero", action="store_true", help="Treat basic events with no probability as 0.0 instead of raising an error")
     p.add_argument("--structured", action="store_true", help="Print structured JSON with Q, conditional Q, importance measures (Birnbaum, criticality, RAW, RRW), and assumptions")
-    p.add_argument("--cut-sets", nargs="?", const="6", default=None, metavar="MAX_ORDER",
-                   help="Print the minimal cut sets as JSON (monotone AND/OR/K_OF_N trees; default max order 6) and exit")
+    listing = p.add_mutually_exclusive_group()
+    listing.add_argument("--cut-sets", nargs="?", const="6", default=None, metavar="MAX_ORDER",
+                         help="Print the minimal cut sets as JSON (monotone AND/OR/K_OF_N trees; default max order 6) and exit")
+    listing.add_argument("--path-sets", nargs="?", const="10", default=None, metavar="MAX_ORDER",
+                         help="Print the minimal path sets (the minimal paths of the RBD; default max order 10) as JSON and exit")
+    listing.add_argument("--to-rbd", action="store_true", help="Print the model as a reliability block diagram (JSON) and exit")
+    listing.add_argument("--to-ft", action="store_true", help="Print the model as a recursive fault tree (JSON) and exit")
     p.add_argument("--serve", action="store_true", help="Run the API server")
     p.add_argument("--host", default="127.0.0.1", help="API host (default: 127.0.0.1; use 0.0.0.0 to expose on all interfaces)")
     p.add_argument("--port", type=int, default=8000, help="API port (default: 8000)")
@@ -47,18 +53,23 @@ def main(argv=None) -> None:
         run_server(host=args.host, port=args.port)
         return
 
-    if args.cut_sets is not None:
+    for flag in ("cut_sets", "path_sets"):
+        value = getattr(args, flag)
+        if value is None:
+            continue
+        option = "--" + flag.replace("_", "-")
         try:
-            args.cut_sets = int(args.cut_sets)
+            setattr(args, flag, int(value))
         except ValueError:
             # "faultree --cut-sets tree.json": the optional MAX_ORDER swallowed
             # the file name, so give it back and use the default order.
             if args.json_file:
-                p.error(f"argument --cut-sets: invalid int value: {args.cut_sets!r}")
-            args.json_file, args.cut_sets = args.cut_sets, 6
+                p.error(f"argument {option}: invalid int value: {value!r}")
+            args.json_file = value
+            setattr(args, flag, 6 if flag == "cut_sets" else 10)
         if args.reliability:
-            p.error("--cut-sets lists failure cut sets of the fault tree;"
-                    " it cannot be combined with --reliability")
+            p.error(f"{option} lists sets of events of the fault tree, which need"
+                    " no probabilities; it cannot be combined with --reliability")
 
     if not args.json_file:
         p.error("the following arguments are required: json_file (unless --serve is used)")
@@ -71,7 +82,9 @@ def main(argv=None) -> None:
     except json.JSONDecodeError as e:
         sys.exit(f"Error: '{args.json_file}' is not valid JSON: {e}")
 
-    if not args.structured and args.cut_sets is None:
+    json_only = (args.structured or args.cut_sets is not None or args.path_sets is not None
+                 or args.to_rbd or args.to_ft)
+    if not json_only:
         if args.reliability:
             print("Mode: Reliability Analysis (Dual Tree)")
         else:
@@ -89,6 +102,12 @@ def main(argv=None) -> None:
 
     try:
         tree = normalize_tree(tree)
+        if args.to_ft:
+            print(json.dumps(tree, indent=2))
+            return
+        if args.to_rbd:
+            print(json.dumps(tree_to_rbd(tree), indent=2))
+            return
 
         if prob_input is None and "prob_file" in tree:
             prob_file = tree["prob_file"]
@@ -102,6 +121,10 @@ def main(argv=None) -> None:
 
         if args.cut_sets is not None:
             result = minimal_cut_sets(tree, max_order=args.cut_sets)
+            print(json.dumps(result, indent=2))
+            return
+        if args.path_sets is not None:
+            result = minimal_path_sets(tree, max_order=args.path_sets)
             print(json.dumps(result, indent=2))
             return
 

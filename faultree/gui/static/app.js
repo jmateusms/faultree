@@ -1,23 +1,24 @@
 // faultree GUI: state, editor wiring, requests to the local server and the
 // results dashboard. Plain ES modules, no build step, nothing from the network.
 import { t, lang, setLang, locale, applyI18n, initLang } from "./i18n.js";
-import { $, el, C, api, fmtP, fmtSci, fmtNum, fmtPct, fmtInt, fmtMs, parseNum, numText, isNum, esc, trunc,
+import { $, el, C, api, fmtP, fmtRq, fmtSci, fmtNum, fmtPct, fmtInt, fmtMs, parseNum, numText, isNum, esc, trunc,
   probScale, downloadJson, exportButtons, bindTip, hideTip, svgEl, sharedColor } from "./util.js";
 import * as M from "./model.js";
 import { renderTree, layout, legend, gateDesc } from "./treeview.js";
+import { renderBlocks, layoutBlocks } from "./rbdview.js";
 import * as Ch from "./charts.js";
 import { SET, loadSettings, setSetting, resetSettings } from "./settings.js";
 
 // ------------------------------------------------------------- state ---
 const S = {
-  doc: null, version: 0, issues: [], selUid: null, file: null,
+  doc: null, version: 0, issues: [], selUid: null, file: null, format: "recursive",
   hist: { past: [], future: [], key: null },
-  success: false, maxOrder: 6,
+  success: false, maxOrder: 6, pathOrder: 10,
   point: null, pointVer: -1, pointErr: null,
   whatif: { forced: {}, res: null, ver: -1, err: null },
   unc: { n: 2000, seed: 0, res: null, ver: -1, err: null, kind: "hist", log: true, bins: 40, measure: "criticality", started: 0 },
-  ui: { ltab: "tree", rtab: "tree", zoomEdit: null, zoomRes: null, impSort: "criticality", scatter: "rawrrw",
-    cutSort: { key: "p", dir: -1 }, highlight: null },
+  ui: { ltab: "tree", rtab: "tree", view: "tree", sets: "cuts", showR: false, zoomEdit: null, zoomRes: null, impSort: "criticality", scatter: "rawrrw",
+    cutSort: { key: "p", dir: -1 }, pathSort: { key: "p", dir: -1 }, highlight: null },
   examples: [], info: null, jobs: new Set(),
 };
 const MEASURES = () => [
@@ -30,6 +31,27 @@ const doc = () => S.doc;
 const pFresh = () => S.point && S.pointVer === S.version && !S.issues.length;
 const nameOf = (id) => { const e = doc().events[id]; if (e) return M.dispName(e); const g = M.gates(doc()).get(id); return g ? M.dispName(g) : id; };
 const fileStem = () => (S.file ? S.file.replace(/\.json$/i, "") : (doc().root.id || "fault-tree"));
+// The Blocks view draws the same document as a reliability block diagram.
+const blocks = () => S.ui.view === "blocks";
+const draw = (svg, opts) => (blocks() ? renderBlocks : renderTree)(svg, doc(), opts);
+// In the Blocks view an INHIBIT group keeps its input and its condition.
+const locked = (f) => blocks() && !!f.p && f.p.gate === "INHIBIT";
+// The Blocks view of a failure-mode model shows P (as the fault tree does)
+// or, on request, R = 1 - P; the inputs keep their meaning either way.
+const asR = () => blocks() && !S.success && S.ui.showR;
+function rReminder(parent) {
+  if (!blocks() || S.success) return;
+  const bar = el("div", { class: "rnote" }, parent);
+  el("span", {}, bar, t(S.ui.showR ? "rbd.showingR" : "rbd.showingP"));
+  el("button", { type: "button", class: "btn ghost xs", onclick: () => { S.ui.showR = !S.ui.showR; renderResults(); } }, bar,
+    t(S.ui.showR ? "rbd.toP" : "rbd.toR"));
+}
+// What a gate does: in the Blocks view, the block structure it is drawn as.
+function descOf(n) {
+  if (!blocks()) return gateDesc(n.gate);
+  const st = M.rbdStructure(n);
+  return t("rbd.struct." + st, { k: st === "kofn" ? M.rbdWork(n) ?? "?" : "", n: n.children.length, gate: n.gate });
+}
 
 // ------------------------------------------------------------ status ---
 let tick = null;
@@ -70,6 +92,9 @@ function changed(opts = {}) {
   const vars = M.bddVars(doc());
   for (const id of Object.keys(S.whatif.forced)) if (!vars.has(id)) delete S.whatif.forced[id];
   if (S.selUid != null && !M.findUid(doc(), S.selUid)) S.selUid = null;
+  // In the Blocks view a node inside a module block is not drawn (undo may
+  // bring one back): its module block is selected instead.
+  if (blocks() && S.selUid != null) S.selUid = M.drawnUid(doc(), S.selUid);
   $("btnUndo").disabled = !S.hist.past.length;
   $("btnRedo").disabled = !S.hist.future.length;
   renderIssues();
@@ -117,7 +142,7 @@ async function runPoint() {
   const ctl = (pointCtl = new AbortController());
   busy("point", true);
   try {
-    const res = await api("/api/analyze", { tree: M.exportTree(doc(), { engine: true }), success_mode: S.success, max_order: S.maxOrder }, ctl.signal);
+    const res = await api("/api/analyze", { tree: M.exportTree(doc(), { engine: true }), success_mode: S.success, max_order: S.maxOrder, path_order: S.pathOrder }, ctl.signal);
     if (ver !== S.version) return;
     S.point = res; S.pointVer = ver; S.pointErr = null;
   } catch (e) {
@@ -184,7 +209,7 @@ async function runUnc() {
 // result trees fit the whole tree when it stays legible.
 function fitZoom(box, d, explicit, mode = "edit") {
   if (explicit) return explicit;
-  const L = layout(d, mode);
+  const L = blocks() ? layoutBlocks(d, mode) : layout(d, mode);
   const wFit = (box.clientWidth - 8) / L.width;
   if (mode === "edit") return Math.max(0.62, Math.min(1, wFit));
   return Math.max(0.6, Math.min(1.15, wFit, (box.clientHeight - 8) / L.height));
@@ -192,7 +217,7 @@ function fitZoom(box, d, explicit, mode = "edit") {
 function renderEditor() {
   const box = $("editBox"), svg = $("editSvg");
   const sl = box.scrollLeft, st = box.scrollTop;
-  renderTree(svg, doc(), {
+  draw(svg, {
     mode: "edit", zoom: fitZoom(box, doc(), S.ui.zoomEdit), selUid: S.selUid, highlight: S.ui.highlight,
     toolbar: nodeAction, onNode: (n) => select(n.uid), tip: editTip, success: S.success,
   });
@@ -202,7 +227,7 @@ function editTip(n) {
   if (n.t === "ref") return [t("tree.cloneOf", { id: n.ref }), nameOf(n.ref), sharedLine(n.ref)];
   if (n.t === "gate") {
     const p = pFresh() ? S.point.probabilities[n.id] : null;
-    return [`${n.id} — ${M.dispName(n)}`, gateDesc(n.gate), p != null ? [S.success ? "R" : "P", fmtP(p, 6)] : null, pandErrLine(n.id), sharedLine(n.id)];
+    return [`${n.id} — ${M.dispName(n)}`, descOf(n), p != null ? [S.success ? "R" : "P", fmtP(p, 6)] : null, pandErrLine(n.id), sharedLine(n.id)];
   }
   const e = doc().events[n.id];
   if (M.isHouse(e)) return [`${n.id} — ${M.dispName(e)}`, [t("side.state"), stateText(e)], t("side.houseHelp"), sharedLine(n.id)];
@@ -248,15 +273,17 @@ function nodeAction(act, uid) {
   if (!f) return;
   const n = f.n;
   pushHist();
-  if (act === "addEvent" || act === "addGate") {
-    const c = act === "addEvent" ? M.newEvent(doc()) : M.newGate(doc());
-    n.children.push(c); S.selUid = c.uid;
+  if (act === "addEvent" || act === "addGate" || act === "addBlock") {
+    const c = act === "addGate" ? M.newGate(doc()) : M.newEvent(doc());
+    M.addBlockTo(n, c, blocks()); S.selUid = c.uid;
     if (n.gate === "PAND" || M.pandMembers(doc()).has(n.id)) M.ensureLifetimes(doc(), n, S.success);
   }
   else if (act === "cycle") {
     if (n.t === "gate") { n.gate = M.CYCLE_GATES[(M.CYCLE_GATES.indexOf(n.gate) + 1) % M.CYCLE_GATES.length]; if (n.gate === "K_OF_N") n.k = Math.min(Math.max(1, n.k || 2), Math.max(1, n.children.length)); }
     else if (n.t === "leaf") { const e = doc().events[n.id]; if (e.kind === "basic" || e.kind === "undeveloped") M.setKind(e, e.kind === "basic" ? "undeveloped" : "basic"); }
-  } else if (act === "delete" && f.p) { f.p.children.splice(f.i, 1); S.selUid = f.p.uid; }
+  } else if (act === "series" || act === "parallel") { S.selUid = M.addAround(doc(), f, act).uid; }
+  else if (act === "structure") M.cycleStructure(n);
+  else if (act === "delete" && f.p) { M.removeFrom(f, blocks()); S.selUid = f.p.uid; }
   changed();
 }
 function sideMsg(s) { const m = $("fMsg"); if (m) m.textContent = s; }
@@ -264,28 +291,33 @@ function renderSide() {
   const box = $("sideEdit");
   const f = S.selUid != null ? M.findUid(doc(), S.selUid) : null;
   if (!f) {
-    box.innerHTML = `<h3>${esc(t("side.title"))}</h3><p class="hint">${esc(t("side.help"))}</p><p class="hint">${esc(t("side.symbols"))}</p>`;
+    box.innerHTML = `<h3>${esc(t("side.title"))}</h3><p class="hint">${esc(t(blocks() ? "rbd.help" : "side.help"))}</p><p class="hint">${esc(t(blocks() ? "rbd.symbols" : "side.symbols"))}</p>`;
     return;
   }
   const n = f.n;
   const move = f.p ? `<button type="button" class="btn ghost sm" data-side="left" title="${esc(t("side.left"))}">◀</button><button type="button" class="btn ghost sm" data-side="right" title="${esc(t("side.right"))}">▶</button>` : "";
-  const remove = f.p ? `<button type="button" class="btn danger sm" data-side="delete">${esc(t("side.remove"))}</button>` : "";
+  const remove = f.p && !locked(f) ? `<button type="button" class="btn danger sm" data-side="delete">${esc(t("side.remove"))}</button>` : "";
   const opt = (id, label) => `<option value="${esc(id)}">${esc(id)} — ${esc(trunc(label, 26))}</option>`;
   if (n.t === "gate") {
     const p = pFresh() ? S.point.probabilities[n.id] : null;
+    const kWork = blocks() && M.rbdStructure(n) === "kofn"; // the Blocks view edits k' = n - k + 1
+    const lock = blocks() && n.gate === "INHIBIT"; // keeps its input and its condition
+    const work = kWork ? M.rbdWork(n) : null;
     const evOpts = Object.keys(doc().events).map((id) => opt(id, M.dispName(doc().events[id]))).join("");
     const clones = M.cloneTargets(doc(), n).map((id) => opt(id, nameOf(id))).join("");
     box.innerHTML = `<h3>${esc(f.p ? t("side.intermediate") : t("side.top"))}</h3>
       <div class="row2"><label class="field"><span>${esc(t("side.gate"))}</span><select id="fGate">${M.GATES.map((g) => `<option value="${g}"${g === n.gate ? " selected" : ""}>${esc(t("gate.name." + g))}</option>`).join("")}</select></label>
-      <label class="field"${n.gate === "K_OF_N" ? "" : " hidden"}><span>k (${esc(t("side.of"))} ${n.children.length})</span><input type="number" id="fK" min="0" max="${n.children.length}" step="1" value="${n.k}"></label></div>
-      <p class="hint" style="margin-top:-4px">${esc(gateDesc(n.gate))}</p>
+      ${kWork ? `<label class="field"><span>${esc(t("rbd.kWork", { n: n.children.length }))}</span><input type="number" id="fK" min="1" max="${n.children.length}" step="1" value="${work ?? ""}"></label>`
+        : `<label class="field"${n.gate === "K_OF_N" ? "" : " hidden"}><span>k (${esc(t("side.of"))} ${n.children.length})</span><input type="number" id="fK" min="0" max="${n.children.length}" step="1" value="${n.k}"></label>`}</div>
+      <p class="hint" style="margin-top:-4px">${esc(gateDesc(n.gate))}${blocks() ? ` · ${esc(t("rbd.drawnAs", { what: descOf(n) }))}` : ""}</p>
       <div class="row2"><label class="field"><span>Id</span><input type="text" id="fId" value="${esc(n.id)}" spellcheck="false"></label>
       <label class="field"><span>${esc(t("side.name"))}</span><input type="text" id="fName" value="${esc(M.dispName(n))}" style="font-family:var(--sans)"></label></div>
       <p class="mono" style="margin:0 0 6px">${S.success ? "R" : "P"} = ${p != null ? esc(fmtP(p, 6)) : "—"}${pandErr(n.id) != null ? ` <span class="hint" title="${esc(t("pand.err"))}">± ${esc(fmtP(pandErr(n.id), 2))}</span>` : ""}</p>
-      <div class="btnrow"><button type="button" class="btn ghost sm" data-side="addEvent">+ ${esc(t("side.addEvent"))}</button><button type="button" class="btn ghost sm" data-side="addGate">+ ${esc(t("side.addGate"))}</button></div>
-      ${evOpts ? `<div class="btnrow"><select id="fExisting" aria-label="${esc(t("side.existing"))}" style="flex:1;min-width:0">${evOpts}</select><button type="button" class="btn ghost sm" data-side="addExisting">+ ${esc(t("side.shared"))}</button></div>` : ""}
-      ${clones ? `<div class="btnrow"><select id="fClone" aria-label="${esc(t("side.cloneOf"))}" style="flex:1;min-width:0">${clones}</select><button type="button" class="btn ghost sm" data-side="addClone">+ ${esc(t("side.clone"))}</button></div>` : ""}
+      ${lock ? "" : `<div class="btnrow"><button type="button" class="btn ghost sm" data-side="addEvent">+ ${esc(t("side.addEvent"))}</button><button type="button" class="btn ghost sm" data-side="addGate">+ ${esc(t("side.addGate"))}</button></div>`}
+      ${evOpts && !lock ? `<div class="btnrow"><select id="fExisting" aria-label="${esc(t("side.existing"))}" style="flex:1;min-width:0">${evOpts}</select><button type="button" class="btn ghost sm" data-side="addExisting">+ ${esc(t("side.shared"))}</button></div>` : ""}
+      ${clones && !lock ? `<div class="btnrow"><select id="fClone" aria-label="${esc(t("side.cloneOf"))}" style="flex:1;min-width:0">${clones}</select><button type="button" class="btn ghost sm" data-side="addClone">+ ${esc(t("side.clone"))}</button></div>` : ""}
       <div class="btnrow">${move}<button type="button" class="btn ghost sm" data-side="wrap">${esc(t("side.wrap"))}</button>${remove}</div>
+      ${blocks() ? `<div class="btnrow"><button type="button" class="btn ghost sm" data-side="showTree">${esc(t("side.showTree"))}</button></div>` : ""}
       <p class="msg err" id="fMsg"></p>`;
   } else if (n.t === "ref") {
     const targets = M.cloneTargets(doc(), f.p).map((id) => `<option value="${esc(id)}"${id === n.ref ? " selected" : ""}>${esc(id)} — ${esc(trunc(nameOf(id), 26))}</option>`).join("");
@@ -298,6 +330,10 @@ function renderSide() {
     const occ = M.occurrences(doc()).get(n.id) || 1;
     const others = Object.keys(doc().events).filter((id) => id !== n.id);
     const title = { basic: t("side.basic"), undeveloped: t("side.undeveloped"), house: t("side.house"), conditioning: t("side.conditioning") }[e.kind];
+    // In the Blocks view an INHIBIT keeps its condition, and its input does
+    // not become a second condition.
+    const lockedCond = locked(f) && e.kind === "conditioning";
+    const kinds = locked(f) ? M.KINDS.filter((k) => k !== "conditioning") : M.KINDS;
     // A house event takes a state instead of a probability; a conditioning
     // event a probability without a failure model.
     const first = e.kind === "house" ? `<label class="field"><span>${esc(t("side.state"))}</span><select id="fState"></select></label>`
@@ -312,11 +348,11 @@ function renderSide() {
       <div class="row2"><label class="field"><span>Id</span><input type="text" id="fId" value="${esc(n.id)}" spellcheck="false"></label>
       <label class="field"><span>${esc(t("side.name"))}</span><input type="text" id="fName" value="${esc(M.dispName(e))}" style="font-family:var(--sans)"></label></div>
       <p class="hint" style="margin-top:-4px">${esc(t("side.idHelp"))}</p>
-      <div class="row2">${first}<label class="field"><span>${esc(t("side.kind"))}</span><select id="fKind">${M.KINDS.map((k) => `<option value="${k}"${e.kind === k ? " selected" : ""}>${esc(t("kind." + k))}</option>`).join("")}</select></label></div>
+      <div class="row2">${first}<label class="field"${lockedCond ? " hidden" : ""}><span>${esc(t("side.kind"))}</span><select id="fKind">${kinds.map((k) => `<option value="${k}"${e.kind === k ? " selected" : ""}>${esc(t("kind." + k))}</option>`).join("")}</select></label></div>
       <div id="fModel"></div>
       ${probs}
-      ${others.length ? `<div class="btnrow"><select id="fExisting" aria-label="${esc(t("side.useOther"))}" style="flex:1;min-width:0">${others.map((id) => opt(id, M.dispName(doc().events[id]))).join("")}</select><button type="button" class="btn ghost sm" data-side="useExisting">${esc(t("side.useThis"))}</button></div>` : ""}
-      <div class="btnrow">${move}${occ > 1 ? `<button type="button" class="btn ghost sm" data-side="detach">${esc(t("side.detach"))}</button>` : ""}<button type="button" class="btn ghost sm" data-side="wrap">${esc(t("side.wrap"))}</button>${remove}</div>
+      ${others.length && !lockedCond ? `<div class="btnrow"><select id="fExisting" aria-label="${esc(t("side.useOther"))}" style="flex:1;min-width:0">${others.map((id) => opt(id, M.dispName(doc().events[id]))).join("")}</select><button type="button" class="btn ghost sm" data-side="useExisting">${esc(t("side.useThis"))}</button></div>` : ""}
+      <div class="btnrow">${move}${occ > 1 ? `<button type="button" class="btn ghost sm" data-side="detach">${esc(t("side.detach"))}</button>` : ""}${blocks() && e.kind === "conditioning" ? "" : `<button type="button" class="btn ghost sm" data-side="wrap">${esc(t("side.wrap"))}</button>`}${remove}</div>
       <p class="msg err" id="fMsg"></p>`;
   }
   const mk = n.t !== "ref" ? M.sharedMarks(doc()).get(n.id) : null;
@@ -449,7 +485,18 @@ function bindSide(n, f) {
       if (n.gate === "PAND") M.ensureLifetimes(doc(), n, S.success); // PAND: time-to-failure models
       changed();
     });
-    $("fK").addEventListener("input", (ev) => { const k = Number(ev.target.value); if (!Number.isInteger(k)) return; pushHist("k" + n.uid); n.k = k; changed({ side: false }); });
+    // The field's meaning (k failures, or in the Blocks view k' blocks that
+    // must work) is fixed when it is drawn; an empty or out-of-range value
+    // in the middle of typing changes nothing.
+    const work = blocks() && M.rbdStructure(n) === "kofn";
+    $("fK").addEventListener("input", (ev) => {
+      const raw = ev.target.value.trim(), v = Number(raw), m = n.children.length, lo = work ? 1 : 0;
+      const bad = !!raw && (!Number.isInteger(v) || v < lo || v > m);
+      ev.target.classList.toggle("bad", bad);
+      sideMsg(bad ? t("side.kRange", { lo, n: m }) : "");
+      if (!raw || bad) return;
+      pushHist("k" + n.uid); n.k = work ? m - v + 1 : v; changed({ side: false });
+    });
   } else {
     $("fKind").addEventListener("change", (ev) => { pushHist(); M.setKind(doc().events[n.id], ev.target.value); changed(); });
   }
@@ -457,9 +504,10 @@ function bindSide(n, f) {
 function sideAction(act, n, f) {
   if (act === "addEvent" || act === "addGate" || act === "delete") return nodeAction(act, n.uid);
   if (act === "toProbs") { setLtab("probs"); return; }
+  if (act === "showTree") { setView("tree"); return; }
   pushHist();
-  if (act === "addExisting") { const c = M.leafNode($("fExisting").value); n.children.push(c); S.selUid = c.uid; }
-  else if (act === "addClone") { const c = M.refNode($("fClone").value); n.children.push(c); S.selUid = c.uid; }
+  if (act === "addExisting") { const c = M.leafNode($("fExisting").value); M.addBlockTo(n, c, blocks()); S.selUid = c.uid; }
+  else if (act === "addClone") { const c = M.refNode($("fClone").value); M.addBlockTo(n, c, blocks()); S.selUid = c.uid; }
   else if (act === "useExisting") { n.id = $("fExisting").value; }
   else if (act === "detach") {
     let id = n.id + "_b", i = 2; const ids = M.allIds(doc());
@@ -582,12 +630,41 @@ async function importProbFile(file) {
 }
 
 // -------------------------------------------------------------- json ---
-function fillJson() { $("jsonText").value = JSON.stringify(M.exportTree(doc()), null, 2); $("jsonMsg").textContent = ""; }
-async function loadJsonData(data, source) {
+// The model's JSON: the fault tree, or in the Blocks view its RBD (made by
+// the server's faultree.rbd, the converter of the library and the CLI).
+let jsonSeq = 0;
+async function fillJson() {
+  const seq = ++jsonSeq;
+  $("jsonMsg").textContent = "";
+  if (!blocks()) { $("jsonText").value = JSON.stringify(M.exportTree(doc()), null, 2); return; }
+  $("jsonText").value = "…";
+  try {
+    const res = await api("/api/rbd", { tree: M.exportTree(doc()) });
+    if (seq === jsonSeq) $("jsonText").value = JSON.stringify(res.rbd, null, 2);
+  } catch (e) { if (seq === jsonSeq) { $("jsonText").value = ""; $("jsonMsg").className = "msg err"; $("jsonMsg").textContent = e.message; } }
+}
+// Saved files say when their prob values are reliabilities.
+const withMode = (model) => (S.success ? { ...model, success_mode: true } : model);
+async function saveRbd() {
+  try {
+    const res = await api("/api/rbd", { tree: withMode(M.exportTree(doc())) });
+    const stem = fileStem();
+    downloadJson(`${stem}${/rbd/i.test(stem) ? "" : "-rbd"}.json`, res.rbd);
+  } catch (e) { renderStatus(e.message); }
+}
+// The analysis mode of loaded data: its success_mode field (the GUI writes
+// it), else for a file its name (*_success.json, as the examples), else the
+// current mode. Set only once the data has loaded.
+async function loadJsonData(data, source, { file = false } = {}) {
   const res = await api("/api/import", { data });
   const { doc: d, notes } = M.importTree(res.tree, res.probs || null);
+  const marked = data && typeof data === "object" && typeof data.success_mode === "boolean" ? data.success_mode : null;
+  const success = marked ?? (file ? /_success\.json$/i.test(source || "") : S.success);
+  if (success !== S.success) setMode(success ? "success" : "failure", false);
   if (res.prob_file_missing) notes.push(t("import.probFileMissing", { file: res.prob_file_missing }));
   S.file = source || null;
+  S.format = res.format;
+  if (res.format === "rbd") setView("blocks", false); // a fault tree keeps the current view
   loadDoc(d, { note: notes.join(" ") || null });
   return notes;
 }
@@ -667,8 +744,9 @@ function resultTip(n, probs, extra = {}) {
   const pl = S.success ? "R" : "P";
   if (n.t !== "leaf") {
     const id = n.t === "ref" ? n.ref : n.id;
-    const lines = n.t === "ref" ? [t("tree.cloneOf", { id }), nameOf(id)] : [`${id} — ${M.dispName(n)}`, gateDesc(n.gate)];
+    const lines = n.t === "ref" ? [t("tree.cloneOf", { id }), nameOf(id)] : [`${id} — ${M.dispName(n)}`, descOf(n)];
     lines.push([pl, fmtP(probs[id], 6)]);
+    if (asR()) lines.push(["R = 1 − P", fmtRq(probs[id])]);
     if (extra.base) lines.push([t("whatif.baseShort"), fmtP(extra.base[id], 6)]);
     const U = S.unc.res;
     if (!extra.base && U && S.unc.ver === S.version && U.probabilities[id]) lines.push(["p5 – p95", `${fmtP(U.probabilities[id].p05, 3)} – ${fmtP(U.probabilities[id].p95, 3)}`]);
@@ -678,6 +756,7 @@ function resultTip(n, probs, extra = {}) {
   const e = doc().events[n.id];
   if (M.isHouse(e)) return [`${n.id} — ${M.dispName(e)}`, [t("side.state"), stateText(e)], sharedLine(n.id), extra.forced ? t("whatif.houseHint") : null];
   const lines = [`${n.id} — ${M.dispName(e)}`, [S.success ? t("probs.r") : "p", fmtP(probs[n.id] ?? e.prob, 6)], ...varLines(n.id, extra)];
+  if (asR()) lines.splice(2, 0, ["R = 1 − p", fmtRq(probs[n.id] ?? e.prob)]);
   if (e.model && !extra.forced) lines.push(modelAt(e));
   const pand = M.pandMembers(doc()).get(n.id);
   if (pand && !extra.forced) lines.push(t("pand.inside", { id: pand }));
@@ -717,25 +796,37 @@ function renderTreeTab() {
   const probs = { ...P.probabilities };
   const scale = scaleOf(probs);
   const lg = el("span", { class: "legendbox" }, top);
-  legend(lg, scale, S.success ? t("tree.legendR") : t("tree.legendP"));
-  el("span", { class: "hint", style: "flex:1" }, top, t("tree.hint"));
+  legend(lg, scale, S.success ? t("tree.legendR") : asR() ? t("rbd.legendP") : t("tree.legendP"));
+  el("span", { class: "hint", style: "flex:1" }, top, t(blocks() ? "rbd.hint" : "tree.hint"));
   const box = treeCanvas(host, "resBox");
   const svg = box.querySelector("svg");
-  exportButtons(top, () => svg, () => `${fileStem()}-tree`);
+  exportButtons(top, () => svg, () => `${fileStem()}-${blocks() ? "blocks" : "tree"}`);
+  rReminder(top);
   const sl = box.scrollLeft, st = box.scrollTop;
-  renderTree(svg, doc(), { mode: "result", zoom: fitZoom(box, doc(), S.ui.zoomRes, "result"), probs, color: scale, success: S.success,
+  draw(svg, { mode: "result", zoom: fitZoom(box, doc(), S.ui.zoomRes, "result"), probs, color: scale, success: S.success, complement: asR(),
     tip: (n) => resultTip(n, probs) });
   box.scrollLeft = sl; box.scrollTop = st;
 }
 
 // cut sets -------------------------------------------------------------
+// Cut sets (failure combinations) or path sets (combinations of working
+// events: the minimal paths of the block diagram).
+function setsSwitch(parent) {
+  const seg = el("span", { class: "seg", role: "radiogroup", "aria-label": t("sets.label") }, parent);
+  for (const k of ["cuts", "paths"]) {
+    const b = el("button", { type: "button", role: "radio", class: S.ui.sets === k ? "on" : null, "aria-checked": String(S.ui.sets === k) }, seg, t("sets." + k));
+    b.addEventListener("click", () => { if (S.ui.sets !== k) { S.ui.sets = k; S.ui.highlight = null; renderCuts(); renderEditor(); } });
+  }
+}
 function renderCuts() {
   const host = $("rtab-cuts");
   host.replaceChildren();
-  if (S.success) { host.appendChild(el("p", { class: "empty" }, null, t("cuts.successMode"))); return; }
+  if (S.ui.sets === "paths") { renderPaths(host); return; }
+  if (S.success) { setsSwitch(el("div", { class: "bar" }, host)); host.appendChild(el("p", { class: "empty" }, null, t("cuts.successMode"))); return; }
   if (!needPoint(host)) return;
   const cs = S.point.cut_sets;
   const top = el("div", { class: "bar" }, host);
+  setsSwitch(top);
   const lab = el("label", { class: "inline" }, top, t("cuts.maxOrder") + " ");
   const mo = el("input", { type: "number", min: 1, max: 12, value: S.maxOrder, style: "width:58px" }, lab);
   mo.addEventListener("change", () => { const v = Number(mo.value); if (Number.isInteger(v) && v >= 1 && v <= 12) { S.maxOrder = v; S.version++; scheduleAnalysis(); } });
@@ -794,6 +885,56 @@ function renderCuts() {
   Ch.cutBars(ch.plot, top15, { caption: t("cuts.chartCaption", { n: top15.length, total: cs.rows.length }), onHover: hover });
   const ex = el("div", { class: "card explain" }, host);
   ex.innerHTML = `<h3>${esc(t("cuts.whatTitle"))}</h3><p>${esc(t("cuts.what1"))}</p><p>${esc(t("cuts.what2"))}</p>`;
+}
+
+function renderPaths(host) {
+  if (!needPoint(host)) return;
+  const ps = S.point.path_sets;
+  const top = el("div", { class: "bar" }, host);
+  setsSwitch(top);
+  const lab = el("label", { class: "inline" }, top, t("cuts.maxOrder") + " ");
+  const mo = el("input", { type: "number", min: 1, max: 40, value: S.pathOrder, style: "width:58px" }, lab);
+  mo.addEventListener("change", () => { const v = Number(mo.value); if (Number.isInteger(v) && v >= 1 && v <= 40) { S.pathOrder = v; S.version++; scheduleAnalysis(); } });
+  if (!ps || !ps.available) {
+    el("p", { class: "empty" }, host, /XOR|monotone/i.test(ps?.error || "") ? t("paths.xor") : t("paths.error", { msg: ps?.error }));
+    return;
+  }
+  el("span", { class: "tag " + (ps.complete ? "ok" : "warn") }, top, ps.complete ? t("cuts.complete") : t("cuts.truncated"));
+  el("span", { class: "hint" }, top, ps.complete ? t("paths.completeHint") : t("paths.truncatedHint", { o: ps.complete_to_order, reason: t("paths.reason." + ps.reason) }));
+  const sums = el("div", { class: "summary", style: "padding-top:0;margin-bottom:12px" }, host);
+  chip(sums, t("paths.count"), fmtInt(ps.rows.length), Object.entries(ps.by_order).map(([o, n]) => t("cuts.byOrder", { o, n })).join(" · "));
+  chip(sums, t("paths.exactR"), fmtP(S.success ? S.point.Q : 1 - S.point.Q, 6), t("paths.exactHint"));
+  const label = (r) => "{" + r.events.join(", ") + "}";
+  const hover = (ids) => { S.ui.highlight = ids ? new Set(ids) : null; renderEditor(); };
+  const tc = el("div", { class: "card" }, host);
+  el("h3", {}, tc, t("paths.table"));
+  if (!ps.rows.length) el("p", { class: "empty" }, tc, ps.complete ? t("paths.none") : t("paths.noneYet", { o: ps.complete_to_order }));
+  else {
+    const box = el("div", { class: "tablebox", style: "max-height:calc(100vh - 380px)" }, tc);
+    const table = el("table", {}, box);
+    const cols = [["rank", "#", true], ["events", t(blocks() ? "paths.blocks" : "paths.events"), false], ["order", t("cuts.order"), true], ["p", t("paths.p"), true]];
+    const thr = el("tr", {}, el("thead", {}, table));
+    const rank = new Map(ps.rows.map((r, i) => [r, i + 1])); // the engine sorts by P(all work)
+    const key = S.ui.pathSort.key, dir = S.ui.pathSort.dir;
+    for (const [k, labTxt, num] of cols) {
+      const th = el("th", { class: "sortable" + (num ? " num" : ""), title: t("imp.sortBy", { what: labTxt }) }, thr, labTxt + (k === key ? (dir < 0 ? " ▼" : " ▲") : ""));
+      th.addEventListener("click", () => { S.ui.pathSort = { key: k, dir: k === key ? -dir : (k === "p" ? -1 : 1) }; renderCuts(); });
+    }
+    const val = (r) => (key === "rank" ? rank.get(r) : key === "events" ? label(r) : key === "order" ? r.order : r.p);
+    const rows = [...ps.rows].sort((a, b) => { const x = val(a), y = val(b); return (typeof x === "string" ? x.localeCompare(y) : x - y) * dir || b.p - a.p; });
+    const tbody = el("tbody", {}, table);
+    for (const r of rows) {
+      const tr = el("tr", {}, tbody);
+      el("td", { class: "num" }, tr, String(rank.get(r)));
+      el("td", { class: "mono", title: r.events.map((id) => `${id}: ${nameOf(id)}`).join("\n") }, tr, label(r));
+      el("td", { class: "num" }, tr, String(r.order));
+      el("td", { class: "num mono" }, tr, fmtP(r.p, 6));
+      tr.addEventListener("pointerenter", () => { tr.classList.add("hl"); hover(r.events); });
+      tr.addEventListener("pointerleave", () => { tr.classList.remove("hl"); hover(null); });
+    }
+  }
+  const ex = el("div", { class: "card explain" }, host);
+  ex.innerHTML = `<h3>${esc(t("paths.whatTitle"))}</h3><p>${esc(t("paths.what1"))}</p><p>${esc(t("paths.what2"))}</p>`;
 }
 
 // importance -------------------------------------------------------------
@@ -881,16 +1022,17 @@ function renderWhatIf() {
   const scale = scaleOf(P.probabilities, W ? W.probabilities : {});
   el("span", { class: "hint grow", style: "margin:0" }, pills, t("whatif.help"));
   const lgb = el("span", { class: "legendbox" }, pills);
-  legend(lgb, scale, S.success ? t("tree.legendR") : t("tree.legendP"));
+  legend(lgb, scale, S.success ? t("tree.legendR") : asR() ? t("rbd.legendP") : t("tree.legendP"));
+  rReminder(top);
   const box = treeCanvas(host, "whatBox");
   box.classList.add("whatif");
   const svg = box.querySelector("svg");
-  exportButtons(lgb, () => svg, () => `${fileStem()}-what-if`);
+  exportButtons(lgb, () => svg, () => `${fileStem()}-what-if${blocks() ? "-blocks" : ""}`);
   const sl = box.scrollLeft, st = box.scrollTop;
   const vars = M.bddVars(doc()), inPand = M.pandMembers(doc());
   const keyOf = (n) => (n.t === "ref" ? n.ref : n.id);
   const hint = (n) => (vars.has(keyOf(n)) ? t("whatif.clickHint") : inPand.has(keyOf(n)) ? t("whatif.pandInside", { id: inPand.get(keyOf(n)) }) : null);
-  renderTree(svg, doc(), { mode: "whatif", zoom: fitZoom(box, doc(), S.ui.zoomRes, "result"), probs, color: scale, forced, success: S.success,
+  draw(svg, { mode: "whatif", zoom: fitZoom(box, doc(), S.ui.zoomRes, "result"), probs, color: scale, forced, success: S.success, complement: asR(),
     tip: (n) => resultTip(n, probs, { base: W ? W.base_probabilities : null, forced, hint: hint(n) }),
     onNode: (n) => cycleForced(keyOf(n)) }); // basic events and PAND gates; house events are set in the editor
   box.scrollLeft = sl; box.scrollTop = st;
@@ -1038,7 +1180,9 @@ async function loadExample(file) {
     const res = await api("/api/examples/" + encodeURIComponent(file));
     const { doc: d, notes } = M.importTree(res.tree, res.probs || null);
     S.file = file;
+    S.format = res.format;
     setMode(res.success_mode ? "success" : "failure", false);
+    if (res.format === "rbd") setView("blocks", false);
     loadDoc(d, { note: res.prob_file ? t("file.withProbs", { file: res.prob_file }) + (notes.length ? " " + notes.join(" ") : "") : notes.join(" ") || null });
   } catch (e) { renderStatus(e.message); }
 }
@@ -1061,6 +1205,7 @@ function setRtab(tab) {
 }
 function setMode(mode, rerun = true) {
   S.success = mode === "success";
+  M.setNewProb(S.success ? 0.99 : 0.01); // a new event's reliability or failure probability
   document.querySelectorAll("[data-mode]").forEach((b) => { const on = b.dataset.mode === mode; b.classList.toggle("on", on); b.setAttribute("aria-checked", on); });
   if (!rerun) return;
   S.unc.res = null; S.whatif.res = null;
@@ -1071,6 +1216,28 @@ function setMode(mode, rerun = true) {
   renderSide();
   if (S.ui.ltab === "probs") renderEvents();
   scheduleAnalysis();
+  renderResults();
+}
+// Tree or Blocks: the same document drawn as a fault tree or as a
+// reliability block diagram, in the editor, the results and what-if.
+function setView(view, rerender = true) {
+  const next = view === "blocks" ? "blocks" : "tree";
+  if (next !== S.ui.view) S.ui.sets = next === "blocks" ? "paths" : "cuts"; // an RBD reads in paths, a fault tree in cuts
+  S.ui.view = next;
+  // A node inside a module block is not drawn: select the module instead.
+  if (blocks() && S.selUid != null && S.doc) S.selUid = M.drawnUid(doc(), S.selUid);
+  document.querySelectorAll("[data-view]").forEach((b) => { const on = b.dataset.view === S.ui.view; b.classList.toggle("on", on); b.setAttribute("aria-checked", on); });
+  const lt = document.querySelector('[data-ltab="tree"]'), rt = document.querySelector('[data-rtab="tree"]');
+  lt.dataset.i18n = blocks() ? "left.blocks" : "left.tree"; lt.textContent = t(lt.dataset.i18n);
+  rt.dataset.i18n = blocks() ? "tab.blocks" : "tab.tree"; rt.textContent = t(rt.dataset.i18n);
+  $("editSvg").dataset.i18nAriaLabel = blocks() ? "rbd.aria" : "tree.aria";
+  $("editSvg").setAttribute("aria-label", t($("editSvg").dataset.i18nAriaLabel));
+  $("jsonIntro").dataset.i18n = blocks() ? "json.introRbd" : "json.intro"; $("jsonIntro").textContent = t($("jsonIntro").dataset.i18n);
+  if (!rerender) return;
+  S.ui.zoomEdit = null; S.ui.zoomRes = null;
+  hideTip();
+  renderEditor(); renderSide();
+  if (S.ui.ltab === "json") fillJson();
   renderResults();
 }
 function renderAll() {
@@ -1122,7 +1289,7 @@ function exportResults() {
     generator: "faultree GUI", faultree_version: S.info?.version, exported: new Date().toISOString(),
     mode: S.success ? "success" : "failure",
     model: M.exportTree(doc()),
-    settings: { max_order: S.maxOrder, samples: S.unc.n, seed: S.unc.seed },
+    settings: { max_order: S.maxOrder, path_order: S.pathOrder, view: S.ui.view, samples: S.unc.n, seed: S.unc.seed },
     point_analysis: P,
     what_if: Object.keys(S.whatif.forced).length ? { forced: S.whatif.forced, result: S.whatif.ver === S.version ? S.whatif.res : null } : null,
     uncertainty: S.unc.res && S.unc.ver === S.version ? S.unc.res : null,
@@ -1132,21 +1299,35 @@ function wire() {
   document.querySelectorAll("[data-ltab]").forEach((b) => b.addEventListener("click", () => setLtab(b.dataset.ltab)));
   document.querySelectorAll("[data-rtab]").forEach((b) => b.addEventListener("click", () => setRtab(b.dataset.rtab)));
   document.querySelectorAll("[data-mode]").forEach((b) => b.addEventListener("click", () => { if ((b.dataset.mode === "success") !== S.success) setMode(b.dataset.mode); }));
+  document.querySelectorAll("[data-view]").forEach((b) => b.addEventListener("click", () => { if (b.dataset.view !== S.ui.view) setView(b.dataset.view); }));
   document.querySelectorAll("[data-lang]").forEach((b) => b.addEventListener("click", () => { setLang(b.dataset.lang); renderAll(); }));
   document.addEventListener("click", (e) => { const z = e.target.closest("[data-zoom]"); if (z) zoomAction(z.dataset.zoom); });
   $("editBox").addEventListener("click", (e) => { if (!e.target.closest(".nd, .tb, .zoom") && S.selUid != null) select(null); });
   $("btnUndo").addEventListener("click", undo);
   $("btnRedo").addEventListener("click", redo);
-  $("btnNew").addEventListener("click", () => { S.file = null; loadDoc(M.emptyDoc()); $("exampleSel").value = ""; });
+  // A new model in the Blocks view is an RBD: success mode, reliabilities as inputs.
+  $("btnNew").addEventListener("click", () => {
+    S.file = null; S.format = blocks() ? "rbd" : "recursive";
+    setMode(blocks() ? "success" : "failure", false);
+    loadDoc(M.emptyDoc()); $("exampleSel").value = "";
+  });
   $("btnOpen").addEventListener("click", () => $("fileOpen").click());
   $("fileOpen").addEventListener("change", async (e) => {
     const file = e.target.files[0];
     e.target.value = "";
     if (!file) return;
-    try { await loadJsonData(JSON.parse(await file.text()), file.name); $("exampleSel").value = ""; }
+    try { await loadJsonData(JSON.parse(await file.text()), file.name, { file: true }); $("exampleSel").value = ""; }
     catch (err) { renderStatus(t("file.openFail", { msg: err.message })); }
   });
-  $("btnSave").addEventListener("click", () => downloadJson(`${fileStem()}.json`, M.exportTree(doc())));
+  // A file opened as an RBD is not overwritten by its fault tree.
+  $("btnSave").addEventListener("click", () => downloadJson(`${fileStem()}${S.format === "rbd" && S.file ? "-tree" : ""}.json`, withMode(M.exportTree(doc()))));
+  $("btnSaveRbd").addEventListener("click", saveRbd);
+  $("saveMenu").querySelectorAll(".pop button").forEach((b) => b.addEventListener("click", () => { $("saveMenu").open = false; }));
+  document.addEventListener("click", (e) => { if (!e.target.closest("#saveMenu")) $("saveMenu").open = false; });
+  $("saveMenu").addEventListener("keydown", (e) => { if (e.key === "Escape" && $("saveMenu").open) { e.preventDefault(); $("saveMenu").open = false; $("saveMenu").querySelector("summary").focus(); } });
+  // Some browsers do not focus a button on click (relatedTarget null): the
+  // document click handler closes the menu then.
+  $("saveMenu").addEventListener("focusout", (e) => { if (e.relatedTarget && !$("saveMenu").contains(e.relatedTarget)) $("saveMenu").open = false; });
   $("btnSaveFlat").addEventListener("click", () => downloadJson(`${fileStem()}-flat.json`, M.exportFlat(doc())));
   $("btnExport").addEventListener("click", exportResults);
   $("exampleSel").addEventListener("change", (e) => { if (e.target.value) loadExample(e.target.value); });
@@ -1208,7 +1389,7 @@ function wire() {
     else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") { e.preventDefault(); redo(); }
     else if ((e.key === "Delete" || e.key === "Backspace") && S.ui.ltab === "tree" && S.selUid != null) {
       const f = M.findUid(doc(), S.selUid);
-      if (f && f.p) { e.preventDefault(); nodeAction("delete", S.selUid); }
+      if (f && f.p && !locked(f)) { e.preventDefault(); nodeAction("delete", S.selUid); }
     }
   });
 }
@@ -1229,7 +1410,9 @@ async function start() {
   if (first) $("exampleSel").value = first;
   const tab = params.get("tab");
   if (tab && $("rtab-" + tab)) setRtab(tab);
+  const view = params.get("view");
+  if (view === "blocks" || view === "tree") setView(view);
 }
 // Read-only hook for automated checks.
-window.faultreeGui = { state: S, exportTree: () => M.exportTree(doc()), runUnc, cycleForced, setRtab, setLtab };
+window.faultreeGui = { state: S, exportTree: () => M.exportTree(doc()), runUnc, cycleForced, setRtab, setLtab, setView };
 start();

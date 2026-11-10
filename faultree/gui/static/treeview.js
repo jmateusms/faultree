@@ -65,7 +65,7 @@ export function gateDesc(g) { return t("gate.desc." + g); }
 
 // The marker badge of a shared item, centred at (x, y): its letter or its
 // number of occurrences; the "color" style has the coloured outline only.
-function markBadge(g, x, y, mk, color, style) {
+export function markBadge(g, x, y, mk, color, style) {
   if (style === "color") return;
   const label = style === "count" ? "×" + mk.count : mk.letter;
   const w = Math.max(18, 8 + label.length * 7.5);
@@ -83,7 +83,7 @@ function leafRing(kind, cx, cy, r, pad) {
   return ["circle", { cx, cy, r: r + pad }];
 }
 // A halo shown (by CSS) on every occurrence of the hovered or selected item.
-function twinRing(tag, attrs, color, g) {
+export function twinRing(tag, attrs, color, g) {
   svgEl(tag, { ...attrs, class: "twinRing", fill: "none", stroke: color, "stroke-width": 5, "stroke-opacity": 0.45,
     visibility: "hidden", "data-noexport": "1" }, g);
 }

@@ -12,6 +12,9 @@ A Python tool for Fault Tree Analysis (FTA) using Ordered Binary Decision Diagra
 - Exact top-event and intermediate-event probabilities in O(|BDD|) time
   (memoized Shannon cofactor recursion) — repeated/shared events are handled
   exactly, with no cut-set approximations.
+- Reliability block diagrams (series, parallel, k-out-of-n, switches,
+  repeated blocks) are analyzed as their fault trees, and models convert
+  between the two forms.
 - Outputs algebraic and symbolic expressions.
 - Supports internal event cloning via `ref` (reference nodes), making the
   model a DAG.
@@ -30,7 +33,8 @@ faultree gui --port 9000 --no-browser   # choose the port; open the page yoursel
 ```
 
 It runs entirely on your computer: a small standard-library server, bound to
-127.0.0.1, serves the page and calls `analyze()` and `minimal_cut_sets()`.
+127.0.0.1, serves the page and calls `analyze()`, `minimal_cut_sets()` and
+`minimal_path_sets()`.
 Nothing is loaded from the internet (it works offline) and it needs no extra
 dependency. Ctrl+C stops it. The interface is in Portuguese and English: it
 follows the browser's language, and the PT/EN switch changes it.
@@ -58,11 +62,32 @@ The model is on the left:
   error factor, beta, uniform, log-uniform); a CSV/Excel probability file can
   be imported (one column per event; one row gives point values, several rows
   give joint sample vectors).
+- **Blocks**: in the Blocks view, the same model drawn as a reliability
+  block diagram (see below): series groups from left to right, parallel
+  groups between two rails, k-out-of-n groups ending in a voter k/n, each
+  group a frame named after its gate. House events are switches, a
+  conditioning event is a dashed block in parallel with its INHIBIT input, a
+  clone is a repeated group drawn as one block, and XOR and PAND gates are
+  module blocks whose logic is in the tree view. The diagram is edited in
+  place: the buttons above the selected block or group add a block in series
+  or in parallel with it (a sibling in a group of that structure, else a new
+  group around both), add a block to a group, change a group between series,
+  parallel and k-out-of-n or a block between basic and undeveloped, and
+  remove it. A k-out-of-n group keeps its number of blocks that must work
+  when blocks are added or removed there (the tree view keeps k), and the
+  panel below edits names, probabilities and that number. **New** in the
+  Blocks view starts a diagram in success analysis, so blocks take
+  reliabilities (a new block has R = 0.99); a fault tree switched to the
+  Blocks view stays in failure analysis, and a reminder there switches the
+  drawing between its failure probabilities P and R = 1 − P without
+  changing what the inputs mean.
 - **JSON**: the model in faultree's format, to edit or paste (recursive or
-  flat) and apply.
+  flat fault tree, or RBD) and apply; in the Blocks view it shows the RBD.
 - The top bar opens the examples in `examples/` and JSON files, saves the
-  model in the recursive or the flat format, and switches between failure
-  analysis (Q) and success analysis (R, with reliabilities as inputs). The
+  model as a recursive or flat fault tree or as an RBD, switches between
+  failure analysis (Q) and success analysis (R, with reliabilities as inputs),
+  and between the Tree and Blocks views of the same model (an RBD file opens
+  in the Blocks view). The
   ⚙ button opens the settings: the shared-event marker, highlighting of
   occurrences and automatic or scientific notation (kept in the browser).
 
@@ -71,17 +96,22 @@ The results are on the right, recomputed as you edit:
 - A summary: exact Q (or R) and its complement, the number of minimal cut
   sets with the completeness flag, the model and BDD sizes, and the
   uncertainty band once it has been run.
-- **Tree**: the exact probability of every event drawn on the tree (one-hue,
-  logarithmic colour scale), with the values on hover.
-- **Minimal cut sets**: a sortable table (order, probability, share of Q),
-  the largest contributions, the completeness flag and maximum order, and the
-  rare-event sum and min-cut upper bound next to the exact Q. Hovering a row
-  marks its events on the model tree.
+- **Tree** (or **Blocks**): the exact probability of every event drawn on
+  the tree or the block diagram (one-hue, logarithmic colour scale), with the
+  values on hover. In the block diagram every group's header carries its
+  value: P that it fails, or R in success mode.
+- **Cuts and paths**: the minimal cut sets in a sortable table (order,
+  probability, share of Q), the largest contributions, the completeness flag
+  and maximum order, and the rare-event sum and min-cut upper bound next to
+  the exact Q; or the minimal path sets (the paths of the block diagram, with
+  the probability that all their blocks work). Hovering a row marks its
+  events on the model.
 - **Importance**: Birnbaum, criticality, RAW and RRW of every basic event as
   sortable bars, and a RAW × RRW (or Birnbaum × criticality) scatter with the
   usual screening thresholds.
-- **What if?**: click basic events to set them failed or working; Q and every
-  gate are recomputed exactly, with the ratio to the base Q.
+- **What if?**: click basic events (or blocks) to set them failed or
+  working; Q and every gate are recomputed exactly, with the ratio to the
+  base Q.
 - **Uncertainty**: draws joint samples of the events that have a
   distribution, propagates them exactly as sample vectors, and shows the
   histogram or CDF of Q with its 5/50/95 % percentiles, mean and point value,
@@ -220,6 +250,68 @@ independent module and puts it into the BDD as one variable:
 the same component appears inside and outside the ordered gate, are not
 independent modules and are rejected.
 
+## Reliability block diagrams
+
+A model can also be a reliability block diagram (RBD), marked by
+`"model": "rbd"`. A block works when its component works, and the system
+works when a path of working blocks joins the input to the output. faultree
+analyzes an RBD as its fault tree, so the analyses, the CLI, the API server
+and the GUI accept it:
+
+```json
+{"model": "rbd", "id": "SYS", "structure": "series", "blocks": [
+  {"id": "PS", "name": "Power supply", "prob": 1e-4},
+  {"id": "PUMPS", "structure": "parallel", "blocks": [
+    {"id": "PA", "prob": 0.01}, {"id": "PB", "prob": 0.01}]},
+  {"structure": "k_of_n", "k": 2, "blocks": [
+    {"id": "S1", "prob": 0.005}, {"id": "S2", "prob": 0.005},
+    {"id": "S3", "prob": 0.005}]}]}
+```
+
+| RBD | Fault tree |
+| --- | --- |
+| `series` group | OR gate |
+| `parallel` group | AND gate |
+| `k_of_n` group: at least `k` of n blocks work (k-out-of-n:G) | `K_OF_N` with k = n − k + 1 (failures) |
+| block; `kind: "undeveloped"` optional | basic or undeveloped event |
+| `switch`: `"open"` (the path is cut) or `"closed"` (a wire) | house event, `state` true or false |
+| `parallel` group of an input and a block of `kind: "conditioning"` | INHIBIT gate |
+| `{"ref": id}`: a repeated block or group | `{"ref": id}` |
+| `{"fault_tree": node}` | that fault-tree node, unchanged |
+
+- A block's `prob` is the same input as an event's `prob`: a failure
+  probability, or a reliability with `--reliability` (`success_mode=True`).
+  Blocks take the other event fields (`failure_model`, `uncertainty`,
+  `name_pt`).
+- Groups take `id`, `name` and `name_pt`. The top group needs an `id`; an
+  unnamed group gets `<parent id>.<position>`, e.g. `SYS.3`. Results, cut
+  sets and importance measures use these ids.
+- XOR (exactly one input fails) has no RBD form. It is not coherent:
+  repairing a component can make it occur, and no arrangement of blocks
+  does that. A PRIORITY AND depends on the order of the failures, which a
+  static diagram does not record. Both stay fault-tree logic inside a
+  `{"fault_tree": node}` block, which can also hold any other fault-tree
+  node.
+- A bridge, or another network that is not series-parallel, can be written
+  as the parallel of its minimal paths with repeated blocks
+  (`examples/rbd_bridge.json`). The result is exact, because a repeated
+  block is one event.
+- `rbd_to_tree(rbd)` and `tree_to_rbd(tree)` convert between the two forms.
+  A fault tree converted to an RBD and back keeps its gates, ids and
+  probabilities.
+- `minimal_path_sets(model)` lists the minimal sets of events whose
+  non-occurrence keeps the top event from occurring: for an RBD, the minimal
+  sets of working blocks that keep the system working. They are built
+  top-down (an OR gate needs a path of every input, an AND gate a path of any
+  input), so a long series system costs no more than its one path. Sets
+  longer than `max_order` (default 10) are left out; a family that grows past
+  `max_family` sets lowers that limit. A list from which nothing was left
+  out is complete; otherwise `complete` is checked on the BDD, and an
+  incomplete list is complete up to `complete_to_order`.
+
+`examples/rbd_cooling.json` uses every element. The GUI draws any model as a
+block diagram (the Blocks view) and saves it as an RBD.
+
 Every basic event must have a probability (from the tree, `--probs`, or a
 probability file); a missing probability is an error unless
 `--assume-missing-zero` is passed.
@@ -273,6 +365,15 @@ faultree examples/fta4.json --structured
 faultree examples/fta4.json --cut-sets        # optional max order, default 6
 ```
 
+Reliability block diagrams (see above), conversion and path sets:
+
+```bash
+faultree examples/rbd_cooling.json                # analyze a block diagram
+faultree examples/pressure_tank.json --to-rbd     # print a fault tree as an RBD
+faultree examples/rbd_bridge.json --to-ft         # print an RBD as a fault tree
+faultree examples/rbd_bridge.json --path-sets     # optional max order, default 10
+```
+
 JSON output is strict: non-finite values (for example an infinite risk
 reduction worth when one event alone guards the top event) are written as
 `null`.
@@ -317,6 +418,10 @@ curl -X POST http://localhost:8000/analyze \
   enumeration for monotone AND/OR/K-of-N trees, with an explicit
   completeness flag.
 - **Dual tree mode**: reliability/success probability from the same tree.
+- **Reliability block diagrams**: series, parallel, k-out-of-n:G groups,
+  switches, repeated blocks and fault-tree blocks, analyzed as their fault
+  trees; `rbd_to_tree()`/`tree_to_rbd()` (`--to-ft`/`--to-rbd`) and minimal
+  path sets (`minimal_path_sets()`, `--path-sets`).
 - **Sampled probabilities**: equal-length array-valued probabilities are joint
   samples and propagate elementwise. Unequal lengths are rejected by default;
   `--resample-independent` explicitly bootstraps independent marginals and
@@ -356,6 +461,9 @@ XOR duality, cycle detection, input validation, server behavior).
   PRIORITY AND gates that share events with the rest of the tree (Markov or
   sequence-BDD methods); uncertainty on failure-model parameters.
 - **Open-PSA MEF**: import/export for ecosystem interoperability.
+- **Reliability block diagrams**: network diagrams (bridges) given as blocks
+  and connections, compiled through their minimal paths, with a graph editor
+  in the GUI.
 - **Frontend**: the local GUI (`faultree gui`) covers editing, exact results,
   cut sets, importance, what-if and uncertainty. Next: navigation of large
   trees (collapse branches, search), state-of-knowledge correlation between

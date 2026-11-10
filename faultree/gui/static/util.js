@@ -68,6 +68,15 @@ export function fmtP(p, sig = 4) {
   const [m, e] = p.toExponential(sig - 1).split("e");
   return Number(m).toLocaleString(locale(), { maximumFractionDigits: sig - 1 }) + "e" + e.replace("+", "");
 }
+// A reliability near 1 with the digits that show 1 − r (0.99996, not 1);
+// past six nines, "1 − 2e-9". fmtRq takes q = 1 − r, which keeps its digits.
+export function fmtRq(q) {
+  if (!isNum(q) || q > 0.1 || q <= 0) return fmtP(1 - q, 3);
+  if (q < 1e-6) return "1 − " + fmtP(q, 2);
+  const d = Math.min(8, Math.max(3, Math.ceil(-Math.log10(q)) + 2));
+  return (1 - q).toLocaleString(locale(), { maximumFractionDigits: d });
+}
+export const fmtR = (r) => fmtRq(1 - r);
 const SUP = { "-": "⁻", 0: "⁰", 1: "¹", 2: "²", 3: "³", 4: "⁴", 5: "⁵", 6: "⁶", 7: "⁷", 8: "⁸", 9: "⁹" };
 // Scientific notation with a superscript exponent, for the large readouts.
 export function fmtSci(p, sig = 4) {
