@@ -59,6 +59,20 @@
 - Flat format: `be_nodes` entries may carry `event_type` (basic,
   undeveloped, house, conditioning) `state` and `failure_model`; a flat model's top-level
   `mission_time` and `time_unit` are kept.
+- `tests/test_property.py`: seeded random trees checked against full
+  enumeration (Q, intermediate probabilities, conditional Q, cut and path
+  sets, the RBD round trip, failure and success mode), PAND gates against a
+  fine-grid reference, and every example file, with a check that no example
+  is left out.
+
+### Changed
+- `analyze()` computes the conditional Q of every basic event, and from it
+  Birnbaum, criticality, RAW and RRW, in one bottom-up and one top-down pass
+  over the BDD instead of one restriction and one model count per event and
+  value: on a 150-event tree, 0.31 s instead of 9.1 s. The sums keep only
+  non-negative terms (compensated), so results agree with the previous method
+  to about 1e-15 relative, rare events included; keys, types and shapes are
+  unchanged.
 
 ## 0.4.0 — 2026-10-08
 

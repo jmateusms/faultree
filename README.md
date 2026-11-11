@@ -414,6 +414,10 @@ curl -X POST http://localhost:8000/analyze \
   also elementwise for sample vectors. Criticality equals the risk-decrease
   form that PRA codes often call Fussell-Vesely (`1 − 1/RRW`); Fussell's
   cut-set definition is larger and agrees with it only for rare events.
+  All events come from one bottom-up and one top-down pass over the BDD:
+  on a 150-event tree with a 13k-node BDD, analyze() takes 0.31 s, against
+  9.1 s with one restriction and model count per event (one machine, best
+  of three).
 - **Minimal cut sets** (`minimal_cut_sets()`, `--cut-sets`): bounded
   enumeration for monotone AND/OR/K-of-N trees, with an explicit
   completeness flag.
@@ -440,10 +444,12 @@ pip install -e ".[server,test]"
 python -m pytest
 ```
 
-`tests/test_auto_examples.py` cross-checks every example tree against an
-independent brute-force oracle; `tests/test_examples.py` pins hand-computed
-golden values; `tests/test_fixes.py` covers regression cases (success-mode
-XOR duality, cycle detection, input validation, server behavior).
+`tests/test_auto_examples.py` cross-checks example trees against an
+independent brute-force oracle; `tests/test_property.py` checks seeded random
+trees and every example file against full enumeration;
+`tests/test_examples.py` pins hand-computed golden values; `tests/test_fixes.py`
+covers regression cases (success-mode XOR duality, cycle detection, input
+validation, server behavior).
 
 ## Backlog
 - **Minimal Cut Sets at scale**: ZBDD-based extraction beyond the bounded
