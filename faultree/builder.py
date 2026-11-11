@@ -603,6 +603,17 @@ def align_probabilities(probs: Dict[str, Any], shuffle: bool = False,
     return probs
 
 
+def _event_probability(var_prob: Dict[str, Any], var: str, allow_missing: bool) -> Any:
+    pv = var_prob.get(var)
+    if pv is None:
+        if not allow_missing:
+            raise ValueError(f"No probability defined for basic event '{var}'")
+        pv = 0.0
+    if isinstance(pv, (list, np.ndarray)):
+        return np.asarray(pv, dtype=float)
+    return float(pv)
+
+
 def wmc(bdd: BDD, func: Function, var_prob: Dict[str, Any], allow_missing: bool = False) -> Any:
     """Probability of `func` by memoized Shannon cofactor recursion, O(|BDD|):
     pr(f) = q * pr(f_high) + (1-q) * pr(f_low).
@@ -625,17 +636,7 @@ def wmc(bdd: BDD, func: Function, var_prob: Dict[str, Any], allow_missing: bool 
         key = int(u)
         r = memo.get(key)
         if r is None:
-            var = u.var
-            pv = var_prob.get(var)
-            if pv is None:
-                if not allow_missing:
-                    raise ValueError(
-                        f"No probability defined for basic event '{var}'")
-                pv = 0.0
-            if isinstance(pv, (list, np.ndarray)):
-                pv = np.asarray(pv, dtype=float)
-            else:
-                pv = float(pv)
+            pv = _event_probability(var_prob, u.var, allow_missing)
             hi, lo = u.high, u.low
             if u.negated:
                 hi, lo = ~hi, ~lo
@@ -1010,6 +1011,204 @@ def _ratio(numerator: Any, denominator: Any) -> Any:
     return float(value) if np.ndim(value) == 0 else value
 
 
+#: Test-only switch: False computes conditional Q with one restriction and
+#: one model count per event and value, the reference for the one-pass path.
+_ONE_PASS_IMPORTANCE = True
+
+
+def _conditional_q_per_event(bdd: BDD, top: Function, var_prob: Dict[str, Any],
+                             events: List[str], allow_missing: bool,
+                             top_q: Any) -> Dict[str, Dict[str, Any]]:
+    return {
+        event: {"true": wmc(bdd, bdd.let({event: True}, top), var_prob, allow_missing=allow_missing),
+                "false": wmc(bdd, bdd.let({event: False}, top), var_prob, allow_missing=allow_missing)}
+        for event in events
+    }
+
+
+def _add(total: Optional[Tuple[Any, Any]], value: Any) -> Tuple[Any, Any]:
+    """Neumaier compensated sum (total, correction) of non-negative terms:
+    the one-pass sums gather up to one term per BDD edge, enough for plain
+    addition to lose about 1e-13 relative."""
+    if total is None:
+        return value, 0.0
+    s, c = total
+    t = s + value
+    if isinstance(t, np.ndarray):
+        c = c + np.where(np.abs(s) >= np.abs(value), (s - t) + value, (value - t) + s)
+    else:
+        c += (s - t) + value if abs(s) >= abs(value) else (value - t) + s
+    return t, c
+
+
+def _total(total: Optional[Tuple[Any, Any]]) -> Any:
+    return None if total is None else total[0] + total[1]
+
+
+class _LevelSums:
+    """Adds a value to every level of a range and reads the total at one
+    level, in O(log n) compensated additions each."""
+
+    def __init__(self, n: int) -> None:
+        self.size = 1
+        while self.size < max(n, 1):
+            self.size *= 2
+        self.cells: List[Any] = [None] * (2 * self.size)
+
+    def add(self, start: int, stop: int, value: Any) -> None:
+        cells = self.cells
+        start += self.size
+        stop += self.size
+        while start < stop:
+            if start & 1:
+                cells[start] = _add(cells[start], value)
+                start += 1
+            if stop & 1:
+                stop -= 1
+                cells[stop] = _add(cells[stop], value)
+            start //= 2
+            stop //= 2
+
+    def at(self, level: int) -> Optional[Tuple[Any, Any]]:
+        total = None
+        i = level + self.size
+        while i:
+            if self.cells[i] is not None:
+                total = _add(total, _total(self.cells[i]))
+            i //= 2
+        return total
+
+
+def _conditional_q_one_pass(bdd: BDD, top: Function, var_prob: Dict[str, Any],
+                            events: List[str], allow_missing: bool,
+                            top_q: Any) -> Dict[str, Dict[str, Any]]:
+    """Q with each event forced true and false, for every event from one
+    bottom-up and one top-down pass over the BDD of ``top``.
+
+    On the BDD with complements pushed into the children (as in wmc),
+    P(v) is the probability of the function at node v and R(v) the
+    probability of reaching v from the root. Every root-to-terminal path
+    crosses the level of event x once: through a node v of x, or along an
+    edge from a node above that level to one below it. So
+    Q(x=1) = sum R(v) P(high v) + S(x) and Q(x=0) = sum R(v) P(low v) + S(x),
+    with S(x) the mass R(u) p(u->w) P(w) of the crossing edges. Every term
+    is non-negative, as in wmc, so rare-event results keep their relative
+    accuracy; Q(x=1) = Q + (1 - q) IB would subtract.
+
+    Results take the type the per-event path returns: exactly 1.0 or 0.0
+    when the restricted function is constant, Q itself for an event not in
+    the BDD, and a scalar when no event with sample-vector probabilities is
+    left in the restricted function. That last case cannot be read from the
+    pass, so a restriction whose samples all agree is recomputed per event.
+    """
+    manager = top.manager
+    true_ref = bdd.true.node
+    false_ref = -true_ref
+    n_levels = len(bdd.vars)
+    probability: Dict[int, Any] = {true_ref: 1.0, false_ref: 0.0}
+    succ: Dict[int, Tuple[int, int, int]] = {}
+    level_q: Dict[int, Any] = {}
+    nodes_at: Dict[int, List[int]] = {}
+    root = top.node
+    try:
+        stack = [root]
+        while stack:
+            u = stack[-1]
+            if u in probability:
+                stack.pop()
+                continue
+            level, low, high = manager.succ(u)
+            if u < 0:
+                low, high = -low, -high
+            pending = [c for c in (high, low) if c not in probability]
+            if pending:
+                stack.extend(pending)
+                continue
+            stack.pop()
+            q = level_q.get(level)
+            if q is None:
+                q = level_q[level] = _event_probability(
+                    var_prob, manager.var_at_level(level), allow_missing)
+            probability[u] = q * probability[high] + (1.0 - q) * probability[low]
+            succ[u] = (level, high, low)
+            nodes_at.setdefault(level, []).append(u)
+
+        def level_of(u: int) -> int:
+            return succ[u][0] if u in succ else n_levels
+
+        # Crossing mass, and counts of crossing edges whose target is not the
+        # true (not the false) terminal, as a difference array over levels.
+        crossing = _LevelSums(n_levels)
+        not_true = [0] * (n_levels + 1)
+        not_false = [0] * (n_levels + 1)
+
+        def cross(start: int, target: int, mass: Any) -> None:
+            stop = level_of(target)
+            if start >= stop:
+                return
+            if target != false_ref:
+                crossing.add(start, stop, mass * probability[target])
+                not_false[start] += 1
+                not_false[stop] -= 1
+            if target != true_ref:
+                not_true[start] += 1
+                not_true[stop] -= 1
+
+        reach: Dict[int, Any] = {root: (1.0, 0.0)}
+        cross(0, root, 1.0)
+        through: Dict[int, List[Any]] = {}
+        for level in sorted(nodes_at):
+            q = level_q[level]
+            sums = through[level] = [None, None, False, False, False, False]
+            for u in nodes_at[level]:
+                r = _total(reach.pop(u))
+                _, high, low = succ[u]
+                for child, weight, slot in ((high, q, 0), (low, 1.0 - q, 1)):
+                    mass = r * weight
+                    sums[slot] = _add(sums[slot], r * probability[child])
+                    # Whether some branch of x's nodes misses the true / false terminal.
+                    sums[2 + slot] |= child != true_ref
+                    sums[4 + slot] |= child != false_ref
+                    if child in succ:
+                        reach[child] = _add(reach.get(child), mass)
+                    cross(level + 1, child, mass)
+
+        open_true = open_false = 0
+        open_at = []
+        for level in range(n_levels):
+            open_true += not_true[level]
+            open_false += not_false[level]
+            open_at.append((open_true, open_false))
+
+        out: Dict[str, Dict[str, Any]] = {}
+        for event in events:
+            level = bdd.level_of_var(event)
+            sums = through.get(level)
+            if sums is None:
+                out[event] = {"true": top_q, "false": top_q}
+                continue
+            skip = crossing.at(level)
+            crossing_not_true, crossing_not_false = open_at[level]
+            values = {}
+            for key, slot in (("true", 0), ("false", 1)):
+                if not crossing_not_true and not sums[2 + slot]:
+                    value: Any = 1.0
+                elif not crossing_not_false and not sums[4 + slot]:
+                    value = 0.0
+                else:
+                    value = _total(_add(skip, _total(sums[slot])))
+                    if np.ndim(value) and np.ptp(value) <= 1e-9 * np.max(np.abs(value)):
+                        value = wmc(bdd, bdd.let({event: key == "true"}, top), var_prob,
+                                    allow_missing=allow_missing)
+                    # Rounding of a sum of terms may pass 1 by an ulp.
+                    value = np.minimum(value, 1.0) if np.ndim(value) else min(value, 1.0)
+                values[key] = value
+            out[event] = values
+        return out
+    finally:
+        probability.clear()
+
+
 def analyze(tree: Dict[str, Any], probs_by_id: Union[Dict[str, Any], str, None] = None,
             ordering: Optional[List[str]] = None, *, use_names: bool = False,
             success_mode: bool = False, shuffle: bool = False,
@@ -1060,18 +1259,14 @@ def analyze(tree: Dict[str, Any], probs_by_id: Union[Dict[str, Any], str, None] 
         probabilities[nid] = _as_input(value, success_mode)
     basic_events: List[str] = []
     collect_basic_events(compiled.tree, basic_events)
-    conditional_q: Dict[str, Dict[str, Any]] = {}
-    birnbaum: Dict[str, Any] = {}
-    for event_id in dict.fromkeys(basic_events):
-        forced_true = compiled.bdd.let({event_id: True}, compiled.top)
-        forced_false = compiled.bdd.let({event_id: False}, compiled.top)
-        q_true = wmc(compiled.bdd, forced_true, base_probs,
-                     allow_missing=allow_missing)
-        q_false = wmc(compiled.bdd, forced_false, base_probs,
-                      allow_missing=allow_missing)
-        conditional_q[event_id] = {"true": q_true, "false": q_false}
-        birnbaum[event_id] = q_true - q_false
     top_id = str(compiled.tree["id"])
+    conditional = (_conditional_q_one_pass if _ONE_PASS_IMPORTANCE
+                   else _conditional_q_per_event)
+    conditional_q = conditional(compiled.bdd, compiled.top, base_probs,
+                                list(dict.fromkeys(basic_events)), allow_missing,
+                                probabilities[top_id])
+    birnbaum = {event_id: values["true"] - values["false"]
+                for event_id, values in conditional_q.items()}
     importance = None
     if not success_mode:
         top_q = probabilities[top_id]
