@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — YYYY-MM-DD
 
 ### Added
 - NUREG-0492 symbols: house events (`event_type: "house"`, `state`
