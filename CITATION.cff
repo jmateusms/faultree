@@ -8,8 +8,8 @@ authors:
     given-names: Mateus
     email: jmateussan@gmail.com
     affiliation: "Universidade Federal de Pernambuco (UFPE), Departamento de Engenharia de Produção, CEERMA"
-version: "0.4.0"
-date-released: "2026-10-08"
+version: "0.5.0"
+date-released: "YYYY-MM-DD"
 doi: 10.5281/zenodo.23244049
 license: BSD-3-Clause
 repository-code: "https://github.com/jmateusms/faultree"
